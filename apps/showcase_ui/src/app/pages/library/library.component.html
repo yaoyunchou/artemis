@@ -38,21 +38,33 @@
           <button type="button" class="secondary-btn" [disabled]="busy()" (click)="savePrompt()">保存提示词</button>
 
           <h3>小任务</h3>
-          <ol class="subtask-list">
+          <ul class="subtask-list">
             @for (subtask of task.subtasks; track subtask.id) {
               <li>
                 <div class="subtask-head">
+                  <span class="subtask-index">{{ $index + 1 }}</span>
                   <strong>{{ subtask.title }}</strong>
+                  <span class="record" [class.done]="subtask.last_status === 'completed'" [class.failed]="subtask.last_status === 'failed'">{{ recordLabel(subtask) }}</span>
+                  @if (isSkip(subtask)) {
+                    <span class="badge skip">跳过</span>
+                  }
+                  @if ((subtask.fail_count || 0) > 0) {
+                    <span class="record failed">失败 {{ subtask.fail_count }}/3</span>
+                  }
                   <span class="badge" [class.script]="subtask.runner === 'script'">{{ scriptLabel(subtask) }}</span>
                   <button type="button" class="text-btn" (click)="beginSubtaskEdit(subtask)">修改</button>
+                  <button type="button" class="text-btn danger" [disabled]="busy()" (click)="deleteSubtask(subtask)">删除</button>
                 </div>
+                @if (subtask.last_reason) {
+                  <p class="reason">{{ subtask.last_reason }}</p>
+                }
                 @if (editingSubtaskId() === subtask.id) {
                   <textarea rows="5" [ngModel]="draftSubtaskPrompt()" (ngModelChange)="draftSubtaskPrompt.set($event)"></textarea>
                   <button type="button" class="secondary-btn" [disabled]="busy()" (click)="saveSubtask()">保存小任务</button>
                 }
               </li>
             }
-          </ol>
+          </ul>
 
           <h3>运行日志</h3>
           @if (runs().length === 0) {

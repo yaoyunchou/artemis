@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS personal_subtasks (
     detail TEXT NOT NULL,
     runner TEXT NOT NULL,
     script_json TEXT,
-    edited INTEGER NOT NULL DEFAULT 0
+    edited INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS personal_task_runs (
     id TEXT PRIMARY KEY,
@@ -67,6 +68,11 @@ class PersonalTaskStore:
     def ensure_schema(self) -> None:
         with db_session(self.db_path) as conn:
             conn.executescript(_SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(personal_subtasks)")}
+            if "fail_count" not in columns:
+                conn.execute(
+                    "ALTER TABLE personal_subtasks ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0"
+                )
             conn.commit()
 
     def create_task(self, prompt: str, title: str | None = None) -> dict[str, Any]:
@@ -99,11 +105,12 @@ class PersonalTaskStore:
                 "SELECT * FROM personal_subtasks WHERE task_id = ? ORDER BY position ASC",
                 (task_id,),
             ).fetchall()
+            latest = _latest_logs(conn, [str(item["id"]) for item in sub_rows])
         task = _task_dict(row)
-        task["subtasks"] = [_subtask_dict(item) for item in sub_rows]
+        task["subtasks"] = [_subtask_dict(item, latest.get(str(item["id"]))) for item in sub_rows]
         return task
 
-    def update_prompt(self, task_id: str, prompt: str) -> dict[str, Any]:
+    def update_prompt(self, task_id: str, prompt: str, *, keep_title: bool = False) -> dict[str, Any]:
         current = self.get_task(task_id)
         fresh = split_saved_prompt(prompt)
         kept = {
@@ -111,8 +118,12 @@ class PersonalTaskStore:
             for item in current["subtasks"]
             if item.get("edited")
         }
+        counts = {
+            str(item["title"]): int(item.get("fail_count") or 0) for item in current["subtasks"]
+        }
         merged: list[dict[str, Any]] = []
         for item in fresh:
+            item["fail_count"] = counts.get(item["title"], int(item.get("fail_count") or 0))
             previous = kept.get(item["title"])
             if previous is None:
                 merged.append(item)
@@ -125,18 +136,64 @@ class PersonalTaskStore:
                     "runner": previous["runner"],
                     "script": previous["script"],
                     "edited": 1,
+                    "fail_count": int(previous.get("fail_count") or 0),
                 }
             )
         now = time.time()
         with db_session(self.db_path) as conn:
             conn.execute(
                 "UPDATE personal_tasks SET prompt = ?, title = ?, updated_at = ? WHERE id = ?",
-                (prompt, fresh[0]["title"] if fresh else current["title"], now, task_id),
+                (
+                    prompt,
+                    current["title"] if keep_title else (fresh[0]["title"] if fresh else current["title"]),
+                    now,
+                    task_id,
+                ),
             )
             conn.execute("DELETE FROM personal_subtasks WHERE task_id = ?", (task_id,))
             self._insert_subtasks(conn, task_id, merged)
             conn.commit()
         return self.get_task(task_id)
+
+    def delete_subtask(self, task_id: str, subtask_id: str) -> dict[str, Any]:
+        self.get_task(task_id)
+        now = time.time()
+        with db_session(self.db_path) as conn:
+            removed = conn.execute(
+                "DELETE FROM personal_subtasks WHERE id = ? AND task_id = ?",
+                (subtask_id, task_id),
+            ).rowcount
+            if not removed:
+                raise KeyError(subtask_id)
+            rows = conn.execute(
+                "SELECT id FROM personal_subtasks WHERE task_id = ? ORDER BY position ASC",
+                (task_id,),
+            ).fetchall()
+            for position, item in enumerate(rows):
+                conn.execute(
+                    "UPDATE personal_subtasks SET position = ? WHERE id = ?",
+                    (position, item["id"]),
+                )
+            conn.execute("UPDATE personal_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+            conn.commit()
+        return self.get_task(task_id)
+
+    def force_ai(self, subtask_id: str) -> None:
+        """A newly seen row is tried by the model once before it can become a script."""
+        with db_session(self.db_path) as conn:
+            conn.execute(
+                "UPDATE personal_subtasks SET runner = 'ai', script_json = NULL WHERE id = ?",
+                (subtask_id,),
+            )
+            conn.commit()
+
+    def set_fail_count(self, subtask_id: str, fail_count: int) -> None:
+        with db_session(self.db_path) as conn:
+            conn.execute(
+                "UPDATE personal_subtasks SET fail_count = ? WHERE id = ?",
+                (fail_count, subtask_id),
+            )
+            conn.commit()
 
     def update_subtask_prompt(self, task_id: str, subtask_id: str, prompt: str) -> dict[str, Any]:
         task = self.get_task(task_id)
@@ -277,8 +334,8 @@ class PersonalTaskStore:
             conn.execute(
                 """
                 INSERT INTO personal_subtasks (
-                    id, task_id, position, title, prompt, detail, runner, script_json, edited
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, task_id, position, title, prompt, detail, runner, script_json, edited, fail_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     uuid.uuid4().hex,
@@ -290,6 +347,7 @@ class PersonalTaskStore:
                     item["runner"],
                     json.dumps(script, ensure_ascii=False) if script else None,
                     int(item.get("edited") or 0),
+                    int(item.get("fail_count") or 0),
                 ),
             )
 
@@ -304,7 +362,28 @@ def _task_dict(row) -> dict[str, Any]:
     }
 
 
-def _subtask_dict(row) -> dict[str, Any]:
+def _latest_logs(conn, subtask_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not subtask_ids:
+        return {}
+    marks = ",".join("?" for _ in subtask_ids)
+    rows = conn.execute(
+        f"""
+        SELECT subtask_id, status, reason, finished_at
+        FROM personal_subtask_logs
+        WHERE subtask_id IN ({marks})
+        ORDER BY finished_at DESC
+        """,
+        subtask_ids,
+    ).fetchall()
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        subtask_id = str(row["subtask_id"])
+        if subtask_id not in latest:
+            latest[subtask_id] = dict(row)
+    return latest
+
+
+def _subtask_dict(row, last: dict[str, Any] | None = None) -> dict[str, Any]:
     script = None
     if row["script_json"]:
         script = json.loads(row["script_json"])
@@ -318,4 +397,8 @@ def _subtask_dict(row) -> dict[str, Any]:
         "runner": row["runner"],
         "script": script,
         "edited": bool(row["edited"]),
+        "fail_count": int(row["fail_count"]) if "fail_count" in row.keys() else 0,
+        "last_status": None if last is None else last.get("status"),
+        "last_reason": None if last is None else last.get("reason"),
+        "last_finished_at": None if last is None else last.get("finished_at"),
     }

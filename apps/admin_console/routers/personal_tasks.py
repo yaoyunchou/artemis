@@ -62,6 +62,14 @@ async def update_personal_task(task_id: str, body: PromptBody):
         raise _missing(exc) from exc
 
 
+@router.delete("/api/personal-tasks/{task_id}/subtasks/{subtask_id}")
+async def delete_personal_subtask(task_id: str, subtask_id: str):
+    try:
+        return _store.delete_subtask(task_id, subtask_id)
+    except KeyError as exc:
+        raise _missing(exc) from exc
+
+
 @router.patch("/api/personal-tasks/{task_id}/subtasks/{subtask_id}")
 async def update_personal_subtask(task_id: str, subtask_id: str, body: PromptBody):
     prompt = body.prompt.strip()

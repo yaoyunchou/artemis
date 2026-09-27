@@ -57,7 +57,12 @@ def compile_recipe(title: str, detail: str, *, source: str = "") -> dict[str, An
         return None
     start_button, done_button = extract_buttons(text)
     if not start_button or not done_button:
-        return None
+        # The coin-task popup only has these two buttons. A row that already
+        # has a fixed shape still gets a script when the prompt does not name
+        # a different pair. "没有按钮" is an explicit opt-out.
+        if "没有按钮" in text or not _is_task_list_row(title, detail):
+            return None
+        start_button, done_button = "去完成", "领取奖励"
     package_match = _PACKAGE.search(source or text)
     package = package_match.group(0) if package_match else None
     if package is None and "闲鱼" in (source or text):
@@ -79,6 +84,82 @@ def compile_recipe(title: str, detail: str, *, source: str = "") -> dict[str, An
         "done_hint": done_hint,
         "limit_seconds": SCRIPT_LIMIT_SECONDS,
     }
+
+
+_DROP_MARKERS = (
+    "列表里没有",
+    "列表中不存在",
+    "不存在",
+    "没有这一行",
+    "未安装",
+    "开始下载",
+    "循环",
+)
+
+
+def should_drop_row(status: str, reason: str, log_text: str) -> bool:
+    """A failed row the screen does not offer should leave the saved prompt.
+
+    The model transcript is not evidence. A long log often says 「不存在」 about
+    some other popup and would mark a real row as 直接跳过.
+    """
+    if status == "completed":
+        return False
+    text = reason.split("最后输出", 1)[0]
+    return any(marker in text for marker in _DROP_MARKERS)
+
+
+def mark_row_skip(prompt: str, title: str) -> str:
+    """Append 「直接跳过」 to the numbered row for ``title``."""
+    lines = prompt.splitlines()
+    rewritten: list[str] = []
+    for line in lines:
+        match = _NUMBERED.match(line)
+        if match:
+            raw_title = (match.group(3) or "").strip()
+            name = raw_title.partition("。")[0].strip()
+            if (title == name or title in raw_title or name in title) and "直接跳过" not in raw_title:
+                prefix = line[: match.start(3)]
+                rewritten.append(f"{prefix}{raw_title}。直接跳过。")
+                continue
+        rewritten.append(line)
+    return "\n".join(rewritten).strip() + "\n"
+
+
+def append_catalog_row(prompt: str, title: str, detail: str) -> str:
+    """Add one numbered row the screen showed and the catalog did not know."""
+    lines = [line for line in prompt.splitlines()]
+    last_number = 0
+    for line in lines:
+        match = _NUMBERED.match(line)
+        if match:
+            last_number = int(match.group(1) or match.group(2) or last_number)
+    body = detail.strip()
+    row = f"{last_number + 1}. {title}。{body}" if body else f"{last_number + 1}. {title}"
+    text = "\n".join(lines).strip()
+    return f"{text}\n{row}\n" if text else f"{row}\n"
+
+
+def drop_numbered_rows(prompt: str, titles: list[str]) -> str:
+    """Remove numbered items whose title matches one of ``titles``. Preamble stays."""
+    if not titles:
+        return prompt
+    keys = [title.strip() for title in titles if title.strip()]
+    lines = prompt.splitlines()
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        match = _NUMBERED.match(line)
+        if match:
+            raw_title = (match.group(3) or "").strip()
+            title = raw_title.partition("。")[0].strip()
+            skipping = any(key == title or key in raw_title or title in key for key in keys)
+            if skipping:
+                continue
+        elif skipping:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip() + "\n"
 
 
 def split_saved_prompt(raw: str) -> list[dict[str, Any]]:
@@ -156,6 +237,15 @@ def _single_title(raw: str) -> str:
         if stripped:
             return stripped if len(stripped) <= 72 else f"{stripped[:72]}…"
     return "未命名任务"
+
+
+def _is_task_list_row(title: str, detail: str) -> bool:
+    """A named row on the reward list, not a generic instruction such as opening Settings."""
+    name = title.strip()
+    if name.startswith(("去", "浏览", "看视频", "发布", "逛")):
+        return True
+    text = f"{title}\n{detail}"
+    return any(token in text for token in ("逛一逛", "签到", "领奖励", "小游戏", "领取奖励"))
 
 
 def _first(text: str, patterns: tuple[re.Pattern[str], ...]) -> str | None:

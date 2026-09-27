@@ -17,6 +17,10 @@ interface PersonalSubtask {
   runner: string;
   script: PersonalScript | null;
   edited: boolean;
+  last_status?: string | null;
+  last_reason?: string | null;
+  last_finished_at?: number | null;
+  fail_count?: number;
 }
 
 interface PersonalLog {
@@ -102,6 +106,45 @@ export class LibraryComponent implements OnInit {
     });
   }
 
+  public deleteSubtask(subtask: PersonalSubtask): void {
+    const task = this.selected();
+    if (!task || this.busy()) {
+      return;
+    }
+    this.busy.set(true);
+    this.agent.deletePersonalSubtask(task.id, subtask.id).subscribe({
+      next: (updated: PersonalTask) => {
+        this.replaceTask(updated);
+        this.busy.set(false);
+        this.message.set(`已删除「${subtask.title}」。`);
+      },
+      error: () => {
+        this.busy.set(false);
+        this.message.set('删除小任务失败。');
+      }
+    });
+  }
+
+  public isSkip(subtask: PersonalSubtask): boolean {
+    const text = `${subtask.prompt || ''}\n${subtask.script?.kind || ''}`;
+    return text.includes('直接跳过') || subtask.script?.kind === 'skip' || (subtask.fail_count || 0) >= 3;
+  }
+
+  public recordLabel(subtask: PersonalSubtask): string {
+    if (!subtask.last_status) {
+      return '今天还没跑';
+    }
+    const status = subtask.last_status === 'completed'
+      ? '已完成'
+      : subtask.last_status === 'failed'
+        ? '失败'
+        : subtask.last_status === 'skipped'
+          ? '已跳过'
+          : subtask.last_status;
+    const when = subtask.last_finished_at ? this.whenLabel(subtask.last_finished_at) : '';
+    return when ? `${status} · ${when}` : status;
+  }
+
   public beginSubtaskEdit(subtask: PersonalSubtask): void {
     this.editingSubtaskId.set(subtask.id);
     this.draftSubtaskPrompt.set(subtask.prompt);
@@ -159,6 +202,16 @@ export class LibraryComponent implements OnInit {
     const script = subtask.script;
     const dwell = script.seconds ? `${script.seconds} 秒` : script.kind;
     return `脚本 · ${script.start_button} → ${script.done_button} · ${dwell}`;
+  }
+
+  private whenLabel(finishedAt: number): string {
+    const date = new Date(finishedAt * 1000);
+    const now = new Date();
+    const sameDay = date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate();
+    const clock = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+    return sameDay ? `今天 ${clock}` : `${date.getMonth() + 1}/${date.getDate()} ${clock}`;
   }
 
   private reload(): void {

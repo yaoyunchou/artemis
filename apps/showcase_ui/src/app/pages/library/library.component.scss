@@ -142,10 +142,63 @@ textarea {
     background: #ecfdf5;
     color: #047857;
   }
+
+  &.skip {
+    background: #fef3c7;
+    color: #92400e;
+  }
 }
 
 .subtask-list {
-  padding-left: 18px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+
+  li {
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+
+    &:last-child {
+      border-bottom: 0;
+    }
+  }
+}
+
+.subtask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.subtask-index {
+  width: 22px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.subtask-head strong {
+  flex: 1;
+  min-width: 0;
+}
+
+.record {
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+
+  &.done {
+    color: #047857;
+  }
+
+  &.failed {
+    color: #b91c1c;
+  }
+}
+
+.text-btn.danger {
+  color: #b91c1c;
 }
 
 .run-card {

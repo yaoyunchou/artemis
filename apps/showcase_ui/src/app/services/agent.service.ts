@@ -427,6 +427,12 @@ export class AgentService {
     return this.http.patch(`/api/personal-tasks/${encodeURIComponent(taskId)}`, { prompt });
   }
 
+  public deletePersonalSubtask(taskId: string, subtaskId: string): Observable<any> {
+    return this.http.delete(
+      `/api/personal-tasks/${encodeURIComponent(taskId)}/subtasks/${encodeURIComponent(subtaskId)}`
+    );
+  }
+
   public updatePersonalSubtask(taskId: string, subtaskId: string, prompt: string): Observable<any> {
     return this.http.patch(
       `/api/personal-tasks/${encodeURIComponent(taskId)}/subtasks/${encodeURIComponent(subtaskId)}`,

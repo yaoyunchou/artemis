@@ -688,7 +688,14 @@ class TaskQueueService:
             manual_stop,
         )
         if should_persist:
-            if session_repo.update_session_status(sess_id, new_status, time.time()):
+            if current_status is None:
+                # Personal-task workers never insert a Flash session row.
+                # Exit status already lives on personal_task_runs.
+                print(
+                    f"[QueueWorker] Session {sess_id} has no database row; "
+                    f"left status '{new_status}' on the personal run"
+                )
+            elif session_repo.update_session_status(sess_id, new_status, time.time()):
                 print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
             else:
                 # The DB row is the fallback MCP pollers reconcile
