@@ -1027,8 +1027,9 @@ def test_capsule_fallback_model_resolution_google_only_and_not_primary():
         mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.6-flash"))
         == "gemini-3.6-flash"
     )
-    # Non-google fallbacks cannot ride the raw google model path.
-    assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) is None
+    # OpenAI-compatible fallbacks ride the same capsule client as the primary.
+    assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) == "gpt-4o-mini"
+    assert mgr._resolve_capsule_fallback_model(ctx_with("anthropic", "claude")) is None
     # A fallback identical to the primary adds nothing.
     assert mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.7-flash")) is None
 

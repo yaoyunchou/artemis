@@ -1751,6 +1751,20 @@
             ></textarea>
           </div>
 
+          @if (splitPreview().length >= 2) {
+            <div class="task-split-preview">
+              <div class="split-heading">
+                <span class="material-symbols-outlined">list_alt</span>
+                <span>先核对屏幕上的任务名，只把重合的 {{ splitPreview().length }} 条候选排进队列</span>
+              </div>
+              <ol class="split-list">
+                @for (item of splitPreview(); track item.index) {
+                  <li>{{ item.index }}. {{ item.title }}</li>
+                }
+              </ol>
+            </div>
+          }
+
           <!-- Contextual Model Descriptor Strip (Clean & Unified for Flash & Pro) -->
           <div class="composer-model-descriptor" [class.is-pro]="selectedProfile() === 'pro'">
             <div class="descriptor-icon-wrap">
@@ -1785,6 +1799,15 @@
           <!-- Composer Bottom Action Bar -->
           <div class="composer-action-bar">
             <div class="bar-left">
+              <label class="collect-switch" title="打开后，这次执行的提示词会收进个人收录">
+                <input
+                  type="checkbox"
+                  [ngModel]="collectTask()"
+                  (ngModelChange)="collectTask.set($event)"
+                  [disabled]="isSubmitting()"
+                />
+                <span>收录</span>
+              </label>
               <!-- Frosted Glass Architecture Toggle Capsule -->
               <div class="model-toggle-capsule">
                 <button
@@ -1821,11 +1844,13 @@
                 class="btn-run-composer"
                 [class.btn-run-pro]="selectedProfile() === 'pro'"
                 [disabled]="!taskGoal().trim() || isSubmitting() || !isReady()"
-                [title]="!isReady() ? (adbProbe()?.summary === 'Device Locked' ? 'Unlock the Android device before running' : 'Complete System Setup before running') : 'Run task'"
+                [title]="!isReady() ? (adbProbe()?.summary === 'Device Locked' ? 'Unlock the Android device before running' : 'Complete System Setup before running') : (splitPreview().length >= 2 ? 'Enqueue the numbered list and run it in order' : 'Run task')"
                 (click)="runTask()"
               >
                 @if (isSubmitting()) {
                   <span class="spinner"></span><span>Starting...</span>
+                } @else if (splitPreview().length >= 2) {
+                  <span class="material-symbols-outlined run-icon">list_alt</span><span>执行任务列表</span>
                 } @else {
                   <span class="material-symbols-outlined run-icon">play_arrow</span><span>Run Task</span>
                 }

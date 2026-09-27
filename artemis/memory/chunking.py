@@ -52,6 +52,13 @@ from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _default_capsule_model() -> str:
+    from artemis.config.settings import configured_model_pair
+
+    pair = configured_model_pair()
+    return pair[0] if pair else "gemini-3.8-flash"
+
 #: Recall guidance line rendered under an extreme-layer period paragraph
 #: (an era whose per-step ledger overflowed to recall-only).
 RECALL_GUIDANCE_TEMPLATE = "  (Step-level ledger via search_history for steps {start}–{end})"
@@ -298,7 +305,7 @@ class StepCapsuleLens(StepLens):
         fallback_model_name: str | None = None,
         fallback_llm: Any | None = None,
     ):
-        self._model_name = model_name or "gemini-3.8-flash"
+        self._model_name = model_name or _default_capsule_model()
         self._llm = llm
         self._ctx = ctx
         # Availability hardening: `chunking.model` is a dedicated model with no
@@ -321,20 +328,22 @@ class StepCapsuleLens(StepLens):
                 " must cover the full step range without gaps or overlaps. Return only JSON."
             )
 
+    def _compatible_llm(self, model_name: str):
+        from artemis.config.settings import settings
+        from artemis.services.llm import get_google_llm, get_openai_llm
+
+        if settings.OPENAI_API_KEY and settings.OPENAI_BASE_URL:
+            return get_openai_llm(model_name=model_name, temperature=0.0)
+        return get_google_llm(model_name=model_name, temperature=0.0)
+
     def _get_llm(self):
         if self._llm is None:
-            from artemis.services.llm import get_google_llm
-
-            self._llm = get_google_llm(model_name=self._model_name, temperature=0.0)
+            self._llm = self._compatible_llm(self._model_name)
         return self._llm
 
     def _get_fallback_llm(self):
         if self._fallback_llm is None and self._fallback_model_name:
-            from artemis.services.llm import get_google_llm
-
-            self._fallback_llm = get_google_llm(
-                model_name=self._fallback_model_name, temperature=0.0
-            )
+            self._fallback_llm = self._compatible_llm(self._fallback_model_name)
         return self._fallback_llm
 
     @property
@@ -891,7 +900,7 @@ class HistoryChunkManager:
         self._max_steps = int(getattr(cc, "max_steps", 12) or 12)
         self._min_steps = max(1, min(self._max_steps, int(getattr(cc, "min_steps", 3) or 3)))
         self._target_source_tokens = int(getattr(cc, "target_source_tokens", 2000) or 2000)
-        self._model_name = getattr(cc, "model", None) or "gemini-3.8-flash"
+        self._model_name = getattr(cc, "model", None) or _default_capsule_model()
         self._max_chunks = int(getattr(cc, "max_chunks", 8) or 8)
         # None uses max_chunks as the era cap.
         self._max_eras = int(getattr(cc, "max_eras", None) or self._max_chunks)
@@ -952,9 +961,9 @@ class HistoryChunkManager:
     def _resolve_capsule_fallback_model(self, ctx: Any) -> str | None:
         """Fallback model for capsule generation when `chunking.model` is down.
 
-        Resolved from the LLM config's summarizer role (which inherits the
-        global default fallback unless overridden). Only same-provider (google)
-        fallbacks apply — the capsule lens rides the raw google model path.
+        Resolved from the LLM config's summarizer fallback. Google and
+        OpenAI-compatible fallbacks both apply; the capsule lens calls
+        whichever endpoint OPENAI_API_KEY + OPENAI_BASE_URL selects.
         """
         try:
             llm_cfg = getattr(ctx, "llm_config", None) if ctx is not None else None
@@ -965,7 +974,11 @@ class HistoryChunkManager:
             fallback = getattr(getattr(llm_cfg, "summarizer", None), "fallback", None)
             provider = str(getattr(fallback, "provider", "") or "")
             model = getattr(fallback, "model", None)
-            if model and is_google_provider(provider) and model != self._model_name:
+            if (
+                model
+                and model != self._model_name
+                and (is_google_provider(provider) or provider == "openai")
+            ):
                 return str(model)
         except Exception as exc:
             logger.debug(f"Capsule fallback model resolution skipped: {exc}", exc_info=True)

@@ -118,7 +118,18 @@ class LLMWithFallback(LLM):
 
 def lightweight_judge_default() -> "LLMWithFallback":
     """Factory default for the lightweight judge nodes (pixel safety net and
-    planner validation): a flash-lite model at temperature 0."""
+    planner validation). Uses the .env model pair when configured."""
+    from artemis.config.settings import configured_model_pair
+
+    pair = configured_model_pair()
+    if pair:
+        primary, fallback = pair
+        return LLMWithFallback(
+            provider="openai",
+            model=primary,
+            temperature=0.0,
+            fallback=LLM(provider="openai", model=fallback, temperature=0.0),
+        )
     return LLMWithFallback(
         provider="google",
         model="gemini-3.5-flash-lite",
@@ -228,6 +239,53 @@ class LLMConfig(BaseModel):
         return value
 
 
+_MODEL_OVERRIDE_KEYS = ("provider", "model", "fallback")
+
+
+def _apply_env_model_pair(config_dict: dict) -> dict:
+    """Force every configured model onto ARTEMIS_MODEL / ARTEMIS_FALLBACK_MODEL."""
+    from artemis.config.settings import configured_model_pair
+
+    pair = configured_model_pair()
+    if pair is None:
+        return config_dict
+
+    primary, fallback = pair
+    forced_fallback = {"provider": "openai", "model": fallback}
+    config_dict = dict(config_dict)
+
+    if "default" in config_dict or "nodes" in config_dict:
+        default = dict(config_dict.get("default") or {})
+        default["provider"] = "openai"
+        default["model"] = primary
+        default["fallback"] = forced_fallback
+        config_dict["default"] = default
+        nodes = {}
+        for name, node in (config_dict.get("nodes") or {}).items():
+            if isinstance(node, dict):
+                nodes[name] = {k: v for k, v in node.items() if k not in _MODEL_OVERRIDE_KEYS}
+            else:
+                nodes[name] = node
+        config_dict["nodes"] = nodes
+        return config_dict
+
+    def _force(node: Any) -> Any:
+        if not isinstance(node, dict) or "model" not in node:
+            return node
+        updated = {k: v for k, v in node.items() if k not in _MODEL_OVERRIDE_KEYS}
+        updated["provider"] = "openai"
+        updated["model"] = primary
+        updated["fallback"] = forced_fallback
+        return updated
+
+    for key, value in list(config_dict.items()):
+        if key == "utils" and isinstance(value, dict):
+            config_dict["utils"] = {name: _force(node) for name, node in value.items()}
+        else:
+            config_dict[key] = _force(value)
+    return config_dict
+
+
 def _expand_default_into_nodes(config_dict: dict) -> dict:
     """Expand unified config format with 'default' and 'nodes' into full LLMConfig schema."""
     if "planner" in config_dict and "utils" in config_dict:
@@ -311,7 +369,7 @@ def parse_llm_config() -> LLMConfig:
     try:
         with open(config_path, encoding="utf-8") as f:
             config_dict = load_jsonc(f)
-            expanded_dict = _expand_default_into_nodes(config_dict)
+            expanded_dict = _expand_default_into_nodes(_apply_env_model_pair(config_dict))
             return LLMConfig.model_validate(expanded_dict)
     except Exception as e:
         logger.error(f"Failed to load or parse llm config: {config_path}. Error: {e}")

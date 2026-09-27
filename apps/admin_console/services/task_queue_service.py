@@ -14,6 +14,7 @@
 
 import asyncio
 from datetime import datetime
+import json
 import logging
 import os
 from pathlib import Path
@@ -559,6 +560,40 @@ class TaskQueueService:
         if device_serial:
             cmd.extend(["--device-serial", str(device_serial)])
             env["ADB_DEVICE_SERIAL"] = str(device_serial)
+        if task_item.get("personal_task_id") and task_item.get("personal_run_id"):
+            cmd = [
+                sys.executable,
+                str(
+                    WORKSPACE_ROOT
+                    / "apps"
+                    / "admin_console"
+                    / "services"
+                    / "personal_task_runner.py"
+                ),
+                "--task-id",
+                str(task_item["personal_task_id"]),
+                "--run-id",
+                str(task_item["personal_run_id"]),
+            ]
+            if device_serial:
+                cmd.extend(["--device-serial", str(device_serial)])
+            return cmd, env
+        plan_path = task_item.get("list_script_plan")
+        if plan_path:
+            cmd = [
+                sys.executable,
+                str(
+                    WORKSPACE_ROOT
+                    / "apps"
+                    / "admin_console"
+                    / "services"
+                    / "list_script_worker.py"
+                ),
+                "--plan",
+                str(plan_path),
+            ]
+            if device_serial:
+                cmd.extend(["--device-serial", str(device_serial)])
         return cmd, env
 
     @classmethod
@@ -759,6 +794,131 @@ class TaskQueueService:
             )
 
     @classmethod
+    async def _enqueue_script_results(cls, task_item: dict[str, Any], sess_id: Any) -> None:
+        """Queue model runs only for rows the UI script could not finish."""
+        from apps.admin_console.services.task_script import parse_script_log
+
+        plan_path = task_item.get("list_script_plan")
+        if not plan_path:
+            return
+        try:
+            plan = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[QueueWorker] Could not read list script plan {plan_path}: {exc}")
+            return
+        rows = plan.get("rows") if isinstance(plan, dict) else None
+        if not isinstance(rows, list):
+            return
+        log_path = WORKSPACE_ROOT / "traces" / str(sess_id) / "stdout.log"
+        text = ""
+        if log_path.is_file():
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        status, fails = parse_script_log(text)
+        routing = dict(
+            profile=str(task_item.get("profile") or "flash"),
+            expected_output=task_item.get("expected_output"),
+            enable_outputter=task_item.get("enable_outputter"),
+            locked_app_package=task_item.get("locked_app_package"),
+            app_path=task_item.get("app_path"),
+            device_serial=task_item.get("device_serial"),
+            ingress=str(task_item.get("ingress") or "frontend"),
+            conversation_id=task_item.get("conversation_id"),
+            verification_level=task_item.get("verification_level"),
+            explorer_mode=task_item.get("explorer_mode"),
+            allow_list_script=False,
+        )
+        if status == "blocked":
+            original = [str(row["goal"]) for row in rows if isinstance(row, dict) and row.get("goal")]
+            print(f"[QueueWorker] List script blocked for {sess_id}; falling back")
+            if task_item.get("script_gave_up"):
+                fallbacks = [
+                    str(row.get("fallback") or row.get("goal"))
+                    for row in rows
+                    if isinstance(row, dict) and (row.get("fallback") or row.get("goal"))
+                ]
+                if fallbacks:
+                    await cls.enqueue_tasks(fallbacks, screen_intersect=False, **routing)
+            elif original:
+                await cls.enqueue_tasks(
+                    original,
+                    screen_intersect=True,
+                    resume_with_script=True,
+                    **routing,
+                )
+            return
+        fallbacks = []
+        for index in fails:
+            if not isinstance(index, int) or index < 0 or index >= len(rows):
+                continue
+            row = rows[index]
+            if isinstance(row, dict) and (row.get("fallback") or row.get("goal")):
+                fallbacks.append(str(row.get("fallback") or row.get("goal")))
+        print(
+            f"[QueueWorker] List script for {sess_id}: "
+            f"{len(rows) - len(fallbacks)} done by script, {len(fallbacks)} left for the model"
+        )
+        if fallbacks:
+            await cls.enqueue_tasks(fallbacks, screen_intersect=False, **routing)
+
+    @classmethod
+    async def _enqueue_screen_matches(cls, task_item: dict[str, Any], sess_id: Any) -> None:
+        """After a list scan, queue only the tasks whose names were on screen."""
+        followups = task_item.get("followup_goals")
+        if not isinstance(followups, list) or not followups:
+            return
+        from apps.admin_console.services.screen_intersect import matching_goals, parse_visible
+
+        log_path = WORKSPACE_ROOT / "traces" / str(sess_id) / "stdout.log"
+        text = ""
+        if log_path.is_file():
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        visible = parse_visible(text)
+        kept = matching_goals(followups, visible)
+        print(
+            f"[QueueWorker] Screen intersect for {sess_id}: "
+            f"{len(visible)} names on screen, enqueue {len(kept)} of {len(followups)}"
+        )
+        if not kept:
+            return
+        if task_item.get("resume_with_script") and len(kept) >= 2:
+            await cls.enqueue_tasks(
+                kept,
+                profile=str(task_item.get("profile") or "flash"),
+                expected_output=task_item.get("expected_output"),
+                enable_outputter=task_item.get("enable_outputter"),
+                locked_app_package=task_item.get("locked_app_package"),
+                app_path=task_item.get("app_path"),
+                device_serial=task_item.get("device_serial"),
+                ingress=str(task_item.get("ingress") or "frontend"),
+                conversation_id=task_item.get("conversation_id"),
+                verification_level=task_item.get("verification_level"),
+                explorer_mode=task_item.get("explorer_mode"),
+                screen_intersect=True,
+                allow_list_script=True,
+                script_gave_up=True,
+            )
+            return
+        stopped: list[str] = []
+        for goal in kept:
+            if "滑过 4 屏" not in goal:
+                goal = goal + "\n若滑过 4 屏仍看不到这一行的名称，立刻结束，不要来回滑。"
+            stopped.append(goal)
+        await cls.enqueue_tasks(
+            stopped,
+            profile=str(task_item.get("profile") or "flash"),
+            expected_output=task_item.get("expected_output"),
+            enable_outputter=task_item.get("enable_outputter"),
+            locked_app_package=task_item.get("locked_app_package"),
+            app_path=task_item.get("app_path"),
+            device_serial=task_item.get("device_serial"),
+            ingress=str(task_item.get("ingress") or "frontend"),
+            conversation_id=task_item.get("conversation_id"),
+            verification_level=task_item.get("verification_level"),
+            explorer_mode=task_item.get("explorer_mode"),
+            screen_intersect=False,
+        )
+
+    @classmethod
     def _announce_session_end(
         cls,
         task_item: dict[str, Any],
@@ -877,6 +1037,10 @@ class TaskQueueService:
                 )
                 await cls._recover_or_fail_recording(sess_id)
                 cls._announce_session_end(task_item, sess_id, goal, new_status, manual_stop)
+                if task_item.get("list_script_plan"):
+                    await cls._enqueue_script_results(task_item, sess_id)
+                else:
+                    await cls._enqueue_screen_matches(task_item, sess_id)
 
         except asyncio.CancelledError:
             print(f"[QueueWorker] Task [{sess_id}] received cancellation signal.")
@@ -1052,6 +1216,12 @@ class TaskQueueService:
         conversation_id: str | None = None,
         verification_level: str | None = None,
         explorer_mode: str | None = None,
+        screen_intersect: bool = False,
+        allow_list_script: bool = True,
+        script_gave_up: bool = False,
+        resume_with_script: bool = False,
+        personal_task_id: str | None = None,
+        personal_run_id: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
@@ -1079,6 +1249,16 @@ class TaskQueueService:
         if rejection_response is not None:
             return rejection_response
 
+        from apps.admin_console.services.task_script import prepare_submission
+
+        prepared = prepare_submission(
+            goals,
+            screen_intersect=screen_intersect,
+            allow_list_script=allow_list_script,
+        )
+        goals = prepared.goals
+        followup_goals = prepared.followups
+        script_plan = prepared.plan
         single_session_id = session_id if (session_id and len(goals) == 1) else None
         if not device_serial:
             # Device enumeration may block on ADB.
@@ -1106,6 +1286,24 @@ class TaskQueueService:
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
             )
+            if followup_goals is not None and i == 0:
+                task_item["followup_goals"] = followup_goals
+                if resume_with_script:
+                    task_item["resume_with_script"] = True
+            if personal_task_id and personal_run_id and i == 0:
+                task_item["personal_task_id"] = personal_task_id
+                task_item["personal_run_id"] = personal_run_id
+            if script_plan is not None and i == 0:
+                plan_dir = WORKSPACE_ROOT / "traces" / "list_scripts"
+                plan_dir.mkdir(parents=True, exist_ok=True)
+                plan_path = plan_dir / f"{uuid.uuid4().hex}.json"
+                plan_path.write_text(
+                    json.dumps(script_plan, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                task_item["list_script_plan"] = str(plan_path)
+                if script_gave_up:
+                    task_item["script_gave_up"] = True
             state.queue_items.append(task_item)
             enqueued_tasks.append(task_item)
             cls._broadcast_startup_progress(

@@ -927,6 +927,13 @@ export class AgentStreamComponent implements AfterViewInit {
     this.agentService.stopTask(sessionId, false);
   }
 
+  /** Stop the running task and drop every item still waiting in the queue. */
+  public stopQueue(event?: Event): void {
+    if (event) event.stopPropagation();
+    this.agentService.stopTask(true);
+    this.isTaskDropdownOpen.set(false);
+  }
+
   public deleteTask(sessionId: string, event?: Event): void {
     if (event) event.stopPropagation();
     if (!confirm(`Are you sure you want to delete this task? This cannot be undone.`)) {

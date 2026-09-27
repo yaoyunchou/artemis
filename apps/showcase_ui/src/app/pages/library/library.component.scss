@@ -1,0 +1,176 @@
+.library-page {
+  max-width: 1080px;
+  margin: 72px auto 48px;
+  padding: 0 24px 48px;
+  font-family: 'Google Sans', 'Google Sans Text', 'Inter', sans-serif;
+  color: #0f172a;
+}
+
+.library-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+  }
+
+  p {
+    margin: 0;
+    color: #475569;
+  }
+}
+
+.library-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 16px;
+}
+
+.task-list,
+.task-detail,
+.empty-card,
+.run-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+}
+
+.task-list {
+  padding: 8px;
+  align-self: start;
+}
+
+.task-row {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+
+  &.active {
+    background: #eff6ff;
+  }
+}
+
+.task-title,
+.subtask-head strong {
+  display: block;
+}
+
+.task-meta,
+.muted,
+.reason {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.task-detail {
+  padding: 20px;
+}
+
+.detail-toolbar,
+.subtask-head,
+.run-card header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.detail-toolbar {
+  justify-content: space-between;
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.primary-btn,
+.secondary-btn,
+.text-btn,
+.text-link {
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.primary-btn,
+.secondary-btn {
+  border: 0;
+  padding: 8px 14px;
+}
+
+.primary-btn {
+  background: #1a73e8;
+  color: #fff;
+}
+
+.secondary-btn,
+.text-btn {
+  background: #f1f5f9;
+  border: 0;
+  color: #0f172a;
+}
+
+.text-btn {
+  padding: 4px 8px;
+}
+
+.text-link {
+  color: #1a73e8;
+  text-decoration: none;
+}
+
+.badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+
+  &.script {
+    background: #ecfdf5;
+    color: #047857;
+  }
+}
+
+.subtask-list {
+  padding-left: 18px;
+}
+
+.run-card {
+  padding: 12px;
+  margin-top: 8px;
+}
+
+pre {
+  white-space: pre-wrap;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.library-message,
+.empty-card {
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 800px) {
+  .library-layout {
+    grid-template-columns: 1fr;
+  }
+}

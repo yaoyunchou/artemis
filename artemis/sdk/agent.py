@@ -600,9 +600,10 @@ class Agent:
                     or active_owner.token == self._device_context.device_id
                 )
             )
+            borrowed_lock = os.environ.get("ARTEMIS_DEVICE_LOCK_BORROWED") == "1"
             device_lock = (
                 None
-                if already_held
+                if already_held or borrowed_lock
                 else DeviceExecutionLock(
                     self._device_context.device_id,
                     description=f"{request.goal[:120]}",

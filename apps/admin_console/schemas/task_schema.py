@@ -32,6 +32,9 @@ class RunRequest(BaseModel):
     ingress: str | None = "frontend"
     session_id: str | None = None
     conversation_id: str | None = None
+    # When a numbered list is submitted, read the on-screen names first and
+    # enqueue only the rows that appear there.
+    screen_intersect: bool = False
 
 
 class ReplayRequest(BaseModel):

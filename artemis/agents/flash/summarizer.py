@@ -36,7 +36,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from artemis.context import ArtemisContext
 from artemis.memory.step_memory import JobKey, StepMemoryService
-from artemis.services.llm import RobustChatModelWrapper, get_google_llm, get_llm
+from artemis.services.llm import RobustChatModelWrapper, get_google_llm, get_llm, get_openai_llm
 from artemis.services.token_meter import record_llm_usage
 from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import format_actions_clean
@@ -161,16 +161,26 @@ class VisualStepSummarizer(StepMemoryService):
             flush_timeout_s=flush_timeout_s,
         )
 
-        # Initialize lightweight VLM: prioritize explicit model_name
-        target_model = model_name or "gemini-2.5-flash-lite"
+        # Model name comes from ARTEMIS_MODEL via flash.step_summarizer.model.
+        from artemis.config.settings import configured_model_pair
+
+        pair = configured_model_pair()
+        env_model = pair[0] if pair else ""
+        target_model = (model_name or env_model).strip()
         self._model_name = target_model
-        try:
-            if model_name:
-                self._llm = get_google_llm(model_name=target_model, temperature=0.0)
-            else:
+        from artemis.config.settings import settings
+
+        if settings.OPENAI_API_KEY and settings.OPENAI_BASE_URL and target_model:
+            self._llm = get_openai_llm(model_name=target_model, temperature=0.0)
+        else:
+            try:
                 self._llm = get_llm(ctx, name="summarizer", is_utils=True)
-        except Exception:
-            self._llm = get_google_llm(model_name=target_model, temperature=0.0)
+            except Exception:
+                self._llm = (
+                    get_google_llm(model_name=target_model, temperature=0.0)
+                    if target_model
+                    else get_google_llm(temperature=0.0)
+                )
         try:
             configured = getattr(self._llm, "model", None) or getattr(self._llm, "model_name", None)
             if isinstance(configured, str) and configured:

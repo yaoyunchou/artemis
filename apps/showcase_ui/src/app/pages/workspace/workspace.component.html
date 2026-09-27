@@ -181,6 +181,14 @@ limitations under the License.
             >
             <span class="material-symbols-outlined">stop</span>
           </button>
+          <button type="button" class="standalone-stop-queue-btn"
+            [disabled]="isSubmitting()"
+            (click)="stopQueue($event)"
+            title="停止整个队列，不再自动开始下一条"
+            aria-label="停止整个队列"
+            >
+            停止队列
+          </button>
         }
       </div>
     </div>

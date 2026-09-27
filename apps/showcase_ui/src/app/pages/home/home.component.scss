@@ -3943,6 +3943,41 @@ $text-light: #94a3b8;
           }
         }
 
+        .task-split-preview {
+          margin-top: 10px;
+          padding: 10px 12px;
+          border-radius: 12px;
+          background: rgba(241, 245, 249, 0.9);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+          max-height: 220px;
+          overflow: auto;
+
+          .split-heading {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12.5px;
+            font-weight: 650;
+            color: #334155;
+
+            .material-symbols-outlined {
+              font-size: 16px;
+              color: #64748b;
+            }
+          }
+
+          .split-list {
+            margin: 8px 0 0;
+            padding-left: 1.2em;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 12.5px;
+            line-height: 1.4;
+            color: #475569;
+          }
+        }
+
         /* Contextual Model Descriptor Strip (Flash & Pro) */
         .composer-model-descriptor {
           display: flex;
@@ -4056,6 +4091,28 @@ $text-light: #94a3b8;
           .bar-left {
             display: flex;
             align-items: center;
+            gap: 10px;
+
+            .collect-switch {
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+              height: 32px;
+              padding: 0 10px;
+              border-radius: 16px;
+              border: 1px solid rgba(226, 232, 240, 0.88);
+              background: rgba(241, 245, 249, 0.85);
+              color: #334155;
+              font-size: 13px;
+              font-weight: 600;
+              cursor: pointer;
+              user-select: none;
+
+              input {
+                accent-color: #1a73e8;
+                margin: 0;
+              }
+            }
 
             .model-toggle-capsule {
               display: inline-flex;

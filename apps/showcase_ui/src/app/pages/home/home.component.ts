@@ -31,6 +31,7 @@ import {
   SuggestionCategory
 } from '../../core/data/smart-tasks.data';
 import { TaskRecommendationService } from '../../core/services/task-recommendation.service';
+import { splitNumberedTask } from '../../core/split-task';
 import {
   DEFAULT_EXPLORER_MODE,
   DEFAULT_VERIFICATION_LEVEL,
@@ -193,6 +194,9 @@ export class HomeComponent implements OnInit, OnDestroy {
   // Task execution parameters
   public selectedProfile = signal<'flash' | 'pro'>('flash');
   public taskGoal = signal<string>('');
+  public collectTask = signal(false);
+  /** Numbered lines in the composer become one queued run each. */
+  public readonly splitPreview = computed(() => splitNumberedTask(this.taskGoal()));
   public isSubmitting = signal<boolean>(false);
   public errorMessage = signal<string | null>(null);
 
@@ -1082,6 +1086,14 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.isSubmitting.set(true);
     this.errorMessage.set(null);
 
+    const queuedGoals = this.splitPreview().map((item) => item.goal);
+    if (this.collectTask()) {
+      this.agentService.collectPersonalTask(goal).subscribe({
+        error: () => {
+          this.errorMessage.set('收录失败，任务仍会继续提交。');
+        }
+      });
+    }
     this.agentService
       .runTask(
         goal,
@@ -1092,7 +1104,8 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.selectedProfile() === 'pro' ? this.enableOutputter() : undefined,
         this.selectedProfile() === 'pro'
           ? { verificationLevel: this.verificationLevel().id, explorerMode: this.explorerMode().id }
-          : undefined
+          : undefined,
+        queuedGoals.length >= 2 ? queuedGoals : undefined
       )
       .subscribe({
         next: () => {

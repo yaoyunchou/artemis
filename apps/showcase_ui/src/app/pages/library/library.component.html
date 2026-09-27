@@ -1,0 +1,84 @@
+<main class="library-page">
+  <header class="library-header">
+    <div>
+      <h1>个人收录</h1>
+      <p>收录的提示词会拆成小任务。能对上的生成脚本，对不上的继续走模型。</p>
+    </div>
+    <a routerLink="/" class="text-link">回首页收录新任务</a>
+  </header>
+
+  @if (message()) {
+    <p class="library-message">{{ message() }}</p>
+  }
+
+  @if (tasks().length === 0) {
+    <section class="empty-card">
+      还没有收录。在首页任务卡片里打开「收录」，再执行一次任务。
+    </section>
+  } @else {
+    <div class="library-layout">
+      <aside class="task-list">
+        @for (task of tasks(); track task.id) {
+          <button type="button" class="task-row" [class.active]="selectedId() === task.id" (click)="select(task)">
+            <span class="task-title">{{ task.title }}</span>
+            <span class="task-meta">{{ task.subtasks.length }} 个小任务</span>
+          </button>
+        }
+      </aside>
+
+      @if (selected(); as task) {
+        <section class="task-detail">
+          <div class="detail-toolbar">
+            <h2>{{ task.title }}</h2>
+            <button type="button" class="primary-btn" [disabled]="busy()" (click)="runSelected()">再次执行</button>
+          </div>
+
+          <label class="field-label" for="task-prompt">执行提示词</label>
+          <textarea id="task-prompt" rows="8" [ngModel]="draftPrompt()" (ngModelChange)="draftPrompt.set($event)"></textarea>
+          <button type="button" class="secondary-btn" [disabled]="busy()" (click)="savePrompt()">保存提示词</button>
+
+          <h3>小任务</h3>
+          <ol class="subtask-list">
+            @for (subtask of task.subtasks; track subtask.id) {
+              <li>
+                <div class="subtask-head">
+                  <strong>{{ subtask.title }}</strong>
+                  <span class="badge" [class.script]="subtask.runner === 'script'">{{ scriptLabel(subtask) }}</span>
+                  <button type="button" class="text-btn" (click)="beginSubtaskEdit(subtask)">修改</button>
+                </div>
+                @if (editingSubtaskId() === subtask.id) {
+                  <textarea rows="5" [ngModel]="draftSubtaskPrompt()" (ngModelChange)="draftSubtaskPrompt.set($event)"></textarea>
+                  <button type="button" class="secondary-btn" [disabled]="busy()" (click)="saveSubtask()">保存小任务</button>
+                }
+              </li>
+            }
+          </ol>
+
+          <h3>运行日志</h3>
+          @if (runs().length === 0) {
+            <p class="muted">还没有运行记录。</p>
+          }
+          @for (run of runs(); track run.id) {
+            <article class="run-card">
+              <header>
+                <span>{{ run.status }}</span>
+                <span>{{ run.summary }}</span>
+              </header>
+              @for (log of run.logs; track log.id) {
+                <div class="log-row">
+                  <button type="button" class="text-btn" (click)="toggleLog(log.id)">
+                    {{ log.title }} · {{ log.runner }} · {{ log.status }}
+                  </button>
+                  <p class="reason">{{ log.reason }}</p>
+                  @if (openLogId() === log.id) {
+                    <pre>{{ log.log_text }}</pre>
+                  }
+                </div>
+              }
+            </article>
+          }
+        </section>
+      }
+    </div>
+  }
+</main>

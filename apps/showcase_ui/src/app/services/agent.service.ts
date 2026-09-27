@@ -415,12 +415,40 @@ export class AgentService {
   /**
    * Run a new task by submitting to backend queue
    */
+  public collectPersonalTask(prompt: string, title?: string): Observable<any> {
+    return this.http.post('/api/personal-tasks', { prompt, title: title || null });
+  }
+
+  public listPersonalTasks(): Observable<{ tasks: any[] }> {
+    return this.http.get<{ tasks: any[] }>('/api/personal-tasks');
+  }
+
+  public updatePersonalTask(taskId: string, prompt: string): Observable<any> {
+    return this.http.patch(`/api/personal-tasks/${encodeURIComponent(taskId)}`, { prompt });
+  }
+
+  public updatePersonalSubtask(taskId: string, subtaskId: string, prompt: string): Observable<any> {
+    return this.http.patch(
+      `/api/personal-tasks/${encodeURIComponent(taskId)}/subtasks/${encodeURIComponent(subtaskId)}`,
+      { prompt }
+    );
+  }
+
+  public runPersonalTask(taskId: string, profile: string = 'flash'): Observable<any> {
+    return this.http.post(`/api/personal-tasks/${encodeURIComponent(taskId)}/run`, { profile });
+  }
+
+  public listPersonalRuns(taskId: string): Observable<{ runs: any[] }> {
+    return this.http.get<{ runs: any[] }>(`/api/personal-tasks/${encodeURIComponent(taskId)}/runs`);
+  }
+
   public runTask(
     goal: string,
     profile: string = 'flash',
     expectedOutput?: string,
     enableOutputter?: boolean,
-    proTuning?: ProTuningOptions
+    proTuning?: ProTuningOptions,
+    goals?: string[]
   ): Observable<any> {
     return new Observable((obs) => {
       const submittedEvent: StartupProgressEvent = {
@@ -429,7 +457,10 @@ export class AgentService {
         timestamp: Date.now() / 1000
       };
       this.pendingStartupProgress.set([submittedEvent]);
-      const payload: any = { goal, profile };
+      const queuedGoals = (goals ?? []).map((item) => item.trim()).filter((item) => item.length > 0);
+      const payload: any = queuedGoals.length >= 2
+        ? { goals: queuedGoals, profile, screen_intersect: true }
+        : { goal, profile };
       if (expectedOutput && expectedOutput.trim()) {
         payload.expected_output = expectedOutput.trim();
       }
@@ -529,7 +560,13 @@ export class AgentService {
     this.isRetrying.set(false);
     this.invalidateStatusSignatures();
     if (effectiveStopAll) {
+      for (const session of this.sessions()) {
+        if (session.status === 'running' || session.status === 'paused' || session.status === 'pending') {
+          this.setSessionStatus(session.session_id, 'cancelled');
+        }
+      }
       this.pendingQueue.set([]);
+      this.activeTasks.set([]);
     }
 
     // Mark active streaming / pending logs as finished if viewing target session

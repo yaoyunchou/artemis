@@ -271,6 +271,18 @@ export class WorkspaceComponent implements OnInit {
     }, 400);
   }
 
+  /** Stop the current task and clear every queued follow-up. */
+  public stopQueue(event?: MouseEvent): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.isSubmitting.set(true);
+    this.agentService.stopTask(true);
+    setTimeout(() => {
+      this.isSubmitting.set(false);
+    }, 400);
+  }
+
   /**
    * Handle mouse down on resizer bar to start dragging. The move/up listeners
    * are attached only for the duration of the drag and run outside the Angular

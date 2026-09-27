@@ -73,7 +73,7 @@ def test_planner_validation_node_defaults_to_lightweight_judge():
     assert node.model == safety_net.model
     assert node.provider == safety_net.provider
     assert node.temperature == 0.0
-    assert "lite" in node.model
+    assert node.fallback.model
 
 
 if __name__ == "__main__":

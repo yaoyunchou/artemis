@@ -7,13 +7,14 @@
   // 1. Global Default Model (Applied to all sub-agents unless overridden below)
   // ------------------------------------------------------------------------------
   "default": {
-    "provider": "google",
-    "model": "gemini-3.8-flash",
-    "thinking_level": "medium",
+    // Model names live in .env: ARTEMIS_MODEL (primary) and ARTEMIS_FALLBACK_MODEL.
+    // Both are called through OPENAI_API_KEY + OPENAI_BASE_URL.
+    // These values are overwritten at load time when those variables are set.
+    "provider": "openai",
+    "model": "qwen3.8-flash",
     "fallback": {
-      "provider": "google",
-      "model": "gemini-3.7-flash",
-      "thinking_level": "medium"
+      "provider": "openai",
+      "model": "qwen3.8-flash"
     }
   },
 
@@ -53,15 +54,10 @@
   // ------------------------------------------------------------------------------
   "nodes": {
     // 🧠 Planner: High-level goal decomposition and strategic step planning
-    "planner": {
-      "thinking_level": "high"
-    },
+    // Planner / operator inherit ARTEMIS_MODEL.
 
     // 🎯 Operator: Screen perception, element interaction, and direct execution
-    "operator": {
-      "thinking_level": "medium",
-      "include_thoughts": true
-    },
+    "operator": {},
 
     // 🎬 Video Analyzer: Multimodal screen recording verification and temporal analysis
     // NOTE: Dual-path engine automatically routes:
@@ -71,58 +67,40 @@
     "video_analyzer": {},
 
     // 👁️ Object Detector & Explorer (Flash Mode): Visual coordinates grounding and bounding boxes
-    // CRITICAL REQUIREMENT: Standard LLMs (including standard Gemini Flash, GPT-4o, Claude 3.7) lack sub-pixel spatial coordinate fine-tuning.
-    // To achieve accurate [x, y] point and bounding box localization, this node MUST use specialized Gemini ER (Embodied Reasoning / Robotics) models:
-    // e.g., "gemini-robotics-er-2-preview". Non-ER models will fail spatial coordinate detection.
-    "object_detector": {
-      "model": "gemini-robotics-er-2-preview",
-      "fallback": {
-        "provider": "google",
-        "model": "gemini-robotics-er-2-preview"
-      }
-    },
+    // This checkout has no Google Robotics ER model. Point detection uses the same
+    // DMXAPI vision model as the operator. Coordinate accuracy is coarser than gemini-robotics-er.
+    "object_detector": {},
 
     // 🔍 Explorer: Deep element grounding and multi-candidate visual search
     // NOTE:
-    //  - "flash" version delegates directly to object_detector (requires Gemini ER model above).
-    //  - "pro" / "ultra" versions run multi-turn ReAct loops (supports both Native Gemini and Universal Multi-Model LangChain engines).
-    "explorer": {
-      "thinking_level": "medium"
-    },
+    //  - "flash" version delegates directly to object_detector.
+    //  - "pro" / "ultra" versions run multi-turn ReAct loops on the universal engine.
+    "explorer": {},
 
     // 📋 Summarizer: Aggregates step history and generates structured outcome
     "summarizer": {},
 
-    // 🔽 Hopper: Fast lightweight package name locator
-    "hopper": {
-      "model": "gemini-3.5-flash-lite",
-      "fallback": {
-        "provider": "google",
-        "model": "gemini-3.1-flash-lite"
-      }
-    },
+    // 🔽 Hopper: Fast lightweight package name locator. Inherits the DMXAPI default.
+    "hopper": {},
 
     // 📝 Outputter: Synthesizes execution trace into final output report
     "outputter": {},
 
-    // 🪵 Log Analyzer: Error log diagnosis with search grounding
+    // 🪵 Log Analyzer: Google Search grounding is unavailable on the OpenAI-compatible route.
     "log_analyzer": {
-      "enable_grounding": true
+      "enable_grounding": false
     },
 
-    // 🩺 Diagnoser Expert: Failure root cause diagnosis with search grounding
+    // 🩺 Diagnoser Expert: Failure root cause diagnosis
     "diagnoser_expert": {
-      "enable_grounding": true
+      "enable_grounding": false
     },
     // 🏛️ Committee Council Members
     "planner_avatar": {},
     "history_analyzer_expert": {},
     // 🔎 Checker: Plan-declared checkpoint verification and exit final review.
     // Thoughts are streamed so the verifier's reasoning shows live in the timeline.
-    "checker": {
-      "thinking_level": "medium",
-      "include_thoughts": true
-    }
+    "checker": {}
     // 🎯 Planner Validation: Advisory review of milestone changes.
     // Defaults to the same lightweight model as the pixel safety net
     // (gemini-3.5-flash-lite, temperature 0); add "planner_validation": {...} here to override.
@@ -145,7 +123,7 @@
       // replacing images only after strictly objective, high-density summaries are ready.
       "step_summarizer": {
         "enabled": true, // Whether background step summarization is active
-        "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference
+        // Model name is ARTEMIS_MODEL in .env.
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
@@ -246,7 +224,6 @@
         // call each); milestone closes are exempt, the hard line waives it.
         "min_steps": 3,
         "target_source_tokens": 2000,
-        "model": "gemini-3.8-flash",
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },

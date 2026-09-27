@@ -178,6 +178,7 @@ async def run_task(request: RunRequest):
         ingress=request.ingress or "frontend",
         session_id=request.session_id,
         conversation_id=request.conversation_id,
+        screen_intersect=bool(request.screen_intersect),
     )
 
 

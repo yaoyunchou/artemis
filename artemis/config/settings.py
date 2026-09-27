@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     PROJECT_NAME: str | None = None
     ARTEMIS_DEFAULT_PROFILE: str = Field(default=DEFAULT_PROFILE)
     ARTEMIS_DEFAULT_MODEL: str = Field(default=DEFAULT_MODEL)
+    # Every agent, detector, summary, and history compression call uses this pair
+    # through OPENAI_API_KEY + OPENAI_BASE_URL. Empty leaves artemis.jsonc as-is.
+    ARTEMIS_MODEL: str = Field(default="")
+    ARTEMIS_FALLBACK_MODEL: str = Field(default="")
 
     # Explorer Tool Settings (the tier itself is configured in artemis.jsonc or
     # via ARTEMIS_EXPLORER_VERSION; see artemis.config.agent.ExplorerConfig)
@@ -309,6 +313,19 @@ class Settings(BaseSettings):
 
 # Singleton instance
 settings = Settings()
+
+
+def configured_model_pair() -> tuple[str, str] | None:
+    """Primary and fallback model names from .env.
+
+    Both are called through the OpenAI-compatible endpoint
+    (OPENAI_API_KEY + OPENAI_BASE_URL). Returns None when unset.
+    """
+    primary = (settings.ARTEMIS_MODEL or "").strip()
+    if not primary:
+        return None
+    fallback = (settings.ARTEMIS_FALLBACK_MODEL or "").strip() or primary
+    return primary, fallback
 
 # Synchronize DATA_ENGINE_DB_PATH in environment for external sub-processes/tools
 if settings.DATA_ENGINE_DB_PATH:

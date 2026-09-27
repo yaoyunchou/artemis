@@ -43,6 +43,15 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
         <span class="material-symbols-outlined tab-icon">space_dashboard</span>
         <span class="tab-label">Workspace</span>
       </a>
+      <a
+        routerLink="/library"
+        routerLinkActive="active"
+        class="nav-tab-btn"
+        title="查看个人收录的任务"
+      >
+        <span class="material-symbols-outlined tab-icon">bookmark</span>
+        <span class="tab-label">个人收录</span>
+      </a>
     </nav>
   `,
   changeDetection: ChangeDetectionStrategy.Eager,

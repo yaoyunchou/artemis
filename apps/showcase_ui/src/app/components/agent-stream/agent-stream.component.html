@@ -28,8 +28,23 @@ limitations under the License.
         aria-label="Task Queue"
         >
         <span class="material-symbols-outlined tab-icon">list_alt</span>
-        <span class="tab-label">Task Queue</span>
+        <span class="tab-label">任务队列</span>
+        @if (activeQueue().length > 0) {
+          <span class="badge-count">{{ activeQueue().length }}</span>
+        }
       </button>
+      @if (activeQueue().length > 0) {
+        <button
+          type="button"
+          class="vscode-tab-btn btn-stop-queue"
+          (click)="stopQueue($event)"
+          title="停止整个队列，不再自动开始下一条"
+          aria-label="停止整个队列"
+        >
+          <span class="material-symbols-outlined tab-icon">stop_circle</span>
+          <span class="tab-label">停止队列</span>
+        </button>
+      }
       <button
         #notesOrigin="cdkOverlayOrigin"
         cdkOverlayOrigin
@@ -57,7 +72,17 @@ limitations under the License.
       <div class="vscode-dropdown-menu task-dropdown">
         <div class="popover-title-header">
           <span class="material-symbols-outlined">list_alt</span>
-          <span>Task Queue</span>
+          <span>任务队列</span>
+          @if (activeQueue().length > 0) {
+            <button
+              type="button"
+              class="btn-stop-queue-inline"
+              (click)="stopQueue($event)"
+              title="停止整个队列，不再自动开始下一条"
+            >
+              停止队列
+            </button>
+          }
         </div>
         <div class="dropdown-section-label">
           <span class="material-symbols-outlined icon-bolt">bolt</span>

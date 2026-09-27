@@ -391,8 +391,10 @@ class StepSummarizerConfig(BaseModel):
         description="Whether to asynchronously summarize historical steps to replace pruned images.",
     )
     model: str = Field(
-        default="gemini-2.5-flash-lite",
-        description="Lightweight model used for background step state summarization.",
+        default="",
+        description=(
+            "Background step-summary model. ARTEMIS_MODEL in .env overrides this field."
+        ),
     )
     prune_history_xml: bool = Field(
         default=True,
@@ -689,7 +691,7 @@ class MemoryChunkingConfig(BaseModel):
     )
     model: str = Field(
         default="gemini-3.8-flash",
-        description="Model used for the chunk-level StepCapsuleLens (bands ①+②).",
+        description="Chunk compression model. ARTEMIS_MODEL in .env overrides this field.",
     )
     max_chunks: int = Field(
         default=8,
@@ -1016,6 +1018,22 @@ class AgentGlobalConfig(BaseModel):
         if vid_env is not None:
             data.setdefault("video_analyzer", {})["enable_ledger"] = vid_env
             data.setdefault("pro", {}).setdefault("video_analyzer", {})["enable_ledger"] = vid_env
+
+        from artemis.config.settings import configured_model_pair
+
+        pair = configured_model_pair()
+        if pair:
+            primary, _fallback = pair
+            flash_cfg = data.setdefault("flash", {})
+            if isinstance(flash_cfg, dict):
+                step_cfg = flash_cfg.setdefault("step_summarizer", {})
+                if isinstance(step_cfg, dict):
+                    step_cfg["model"] = primary
+            memory_cfg = data.setdefault("memory", {})
+            if isinstance(memory_cfg, dict):
+                chunk_cfg = memory_cfg.setdefault("chunking", {})
+                if isinstance(chunk_cfg, dict):
+                    chunk_cfg["model"] = primary
 
         return data
 
