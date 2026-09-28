@@ -83,23 +83,23 @@
     },
     {
       "title": "参与一次拼手气红包",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": "不要付款"
+      "reason": "完成要花闲鱼币参与瓜分，不付款"
     },
     {
       "title": "好物夺宝试试手气",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": "不要付款，不要填地址，不要开始抽奖"
+      "reason": "完成要投注夺宝，不付款"
     },
     {
       "title": "去淘宝签到领红包",
-      "run": "yes",
+      "run": "done",
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
@@ -107,51 +107,51 @@
     },
     {
       "title": "去大众点评赢免单",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": ""
+      "reason": "页面只有立即打开或下载"
     },
     {
       "title": "去一淘签到领现金",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": ""
+      "reason": "打开会弹出下载确认"
     },
     {
       "title": "去快手极速版领红包",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": "不要点下载或登录"
+      "reason": "只能下载注册，不下载"
     },
     {
       "title": "去百度逛一逛",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": ""
+      "reason": "页面只有立即下载"
     },
     {
       "title": "去淘特领好礼",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": ""
+      "reason": "页面只有去下载"
     },
     {
       "title": "去点淘赚零花钱",
-      "run": "yes",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 1,
       "seconds": 15,
-      "reason": ""
+      "reason": "页面只有下载或打开APP"
     },
     {
       "title": "看15秒视频领奖励",
@@ -184,6 +184,118 @@
       "script_fails": 0,
       "seconds": 15,
       "reason": "领取后这一行从列表消失"
+    },
+    {
+      "title": "通过首页访问闲鱼币",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "倒计时30s获得1个骰子",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "点闪购商品领叠加红包",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去蚂蚁庄园逛一逛",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去逛一逛芭芭农场",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "倒计时60s获得1个骰子",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去支付宝农场领水果",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "逛逛淘宝闪购天天免单",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去淘宝闪购果园领水果",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去美团刷视频赚钱",
+      "run": "done",
+      "script": "browse_ad",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去支付宝领积分",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去逛一逛淘金币",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去玩消消乐领现金",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "标题是玩消消乐，必须闯关，直接跳过"
+    },
+    {
+      "title": "玩夜市消不停游戏1关",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
     }
   ]
 }

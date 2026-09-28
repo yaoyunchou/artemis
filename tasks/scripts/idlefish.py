@@ -123,12 +123,13 @@ def _dice_left(elements: list[dict[str, Any]]) -> int | None:
 
 
 def _dice_point(elements: list[dict[str, Any]]) -> tuple[int, int] | None:
+    """点在 ×N 角标正下方。角标不在屏幕正中，点屏幕中心会打到棋盘奖品。"""
     badge = _dice_badge(elements)
     if badge is None:
         return None
-    width, _height = h.screen_size(elements)
     bounds = badge.get("bounds") or [0, 0, 0, 0]
-    return width // 2, int(bounds[3]) + 80
+    x_pos = (int(bounds[0]) + int(bounds[2])) // 2
+    return x_pos, int(bounds[3]) + 100
 
 
 def _earn_dice_point(elements: list[dict[str, Any]]) -> tuple[int, int] | None:
@@ -460,13 +461,14 @@ def roll_dice(phone: Any, *, leave_sheet: bool) -> int:
         return 0
     rolled = 0
     stuck = 0
-    for _ in range(40):
+    for _ in range(80):
         _xml, elements = phone.dump()
         if on_task_list(elements):
             break
         surprise = h.find_exact(elements, "限时惊喜")
+        lottery = h.find_exact(elements, "开始抽奖")
         dismiss = h.find_dismiss(elements)
-        if surprise is not None or (dismiss is not None and _dice_left(elements) is None):
+        if surprise is not None or lottery is not None or (dismiss is not None and _dice_left(elements) is None):
             if dismiss is None:
                 break
             x_pos, y_pos = h.center(dismiss)
@@ -474,7 +476,7 @@ def roll_dice(phone: Any, *, leave_sheet: bool) -> int:
             continue
         left = _dice_left(elements)
         point = _dice_point(elements)
-        if point is None or not left or rolled >= 20:
+        if point is None or not left:
             break
         phone.tap(point[0], point[1])
         time.sleep(2.5)

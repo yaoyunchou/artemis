@@ -79,7 +79,7 @@ def test_dice_and_earn_dice_come_from_the_badge_when_there_is_no_text():
         {"text": "×6", "bounds": [601, 942, 695, 997]},
     ]
     assert script._dice_left(board) == 6
-    assert script._dice_point(board) == (540, 1077)
+    assert script._dice_point(board) == (648, 1097)
     assert script._earn_dice_point(board) == (847, 1079)
     board.append({"text": "领", "bounds": [813, 1055, 882, 1105]})
     assert script._earn_dice_point(board) == (847, 1080)

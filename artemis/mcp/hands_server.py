@@ -19,7 +19,10 @@ actions. It does not plan, check, or call a model.
 """
 
 import base64
+import json
 import os
+import time
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -28,6 +31,19 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from artemis.mcp.action_types import ActionCode, ActionResult
 from artemis.mcp.actuators.adb import AdbActuator
 from artemis.mcp.hands_session import HANDS_TOOL_NAMES, HandsSession
+from artemis.mcp.hands_trace import HandsTrace, RowBusy
+from artemis.mcp.row_steps import (
+    catalog_path,
+    compress_steps,
+    find_catalog_row,
+    find_tap,
+    judge_row,
+    load_catalog,
+    note_replay_failure,
+    note_replay_success,
+    store_steps,
+    texts_of,
+)
 from artemis.runtime.device_lock import DeviceBusyError, DeviceExecutionLock
 
 __all__ = ["HANDS_TOOL_NAMES", "HandsBindError", "HandsRuntime", "mcp", "main"]
@@ -46,6 +62,7 @@ class HandsRuntime:
         self.session: HandsSession | None = None
         self.lock: DeviceExecutionLock | None = None
         self.serial: str | None = None
+        self.trace = HandsTrace(Path(__file__).resolve().parents[2])
 
     def list_devices(self) -> list[str]:
         if os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
@@ -100,6 +117,7 @@ class HandsRuntime:
         self.lock = new_lock
         self.session = session
         self.serial = chosen
+        self.trace.device = chosen
         return chosen
 
     def ensure(self) -> HandsSession:
@@ -127,6 +145,26 @@ def _ok_result(result: ActionResult) -> CallToolResult:
         structuredContent=result.model_dump(mode="json"),
         isError=False,
     )
+
+
+def _json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _look_texts(session: HandsSession) -> list[str]:
+    return texts_of(session.elements)[:80]
+
+
+def _click_text(session: HandsSession, target: Any) -> str:
+    if isinstance(target, str) and target.strip().isdigit():
+        target = int(target.strip())
+    if isinstance(target, int) and 1 <= target <= len(session.elements):
+        return str(session.elements[target - 1].get("text") or "").strip()
+    return ""
+
+
+def _note_look(session: HandsSession) -> None:
+    runtime.trace.note({"op": "look", "texts": _look_texts(session)})
 
 
 def _look_text(obs) -> str:
@@ -183,6 +221,8 @@ async def look(include_image: bool = True, settle_ms: int = 400) -> CallToolResu
         obs, image = await session.look(include_image=include_image, settle_ms=settle_ms)
     except Exception as exc:
         return _failure("look", f"Error during look: {exc}")
+    if obs.ok and obs.hierarchy_ok:
+        _note_look(session)
     content: list[Any] = [TextContent(type="text", text=_look_text(obs))]
     if include_image and image:
         content.append(
@@ -206,10 +246,16 @@ async def click(target: int | list[int], times: int = 1, delay_ms: int = 100) ->
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("click", str(exc))
+    text = _click_text(session, target)
     try:
-        return _ok_result(await session.click(target, times=times, delay_ms=delay_ms))
+        result = await session.click(target, times=times, delay_ms=delay_ms)
     except Exception as exc:
         return _failure("click", f"Error during click: {exc}")
+    if result.ok:
+        runtime.trace.note(
+            {"op": "click", "text": text, "xy": result.normalized_coordinates}
+        )
+    return _ok_result(result)
 
 
 @mcp.tool(name="long_press")
@@ -233,9 +279,12 @@ async def swipe(start: list[int], end: list[int], duration_ms: int = 800) -> Cal
     except HandsBindError as exc:
         return _failure("swipe", str(exc))
     try:
-        return _ok_result(await session.swipe(start, end, duration_ms=duration_ms))
+        result = await session.swipe(start, end, duration_ms=duration_ms)
     except Exception as exc:
         return _failure("swipe", f"Error during swipe: {exc}")
+    if result.ok:
+        runtime.trace.note({"op": "swipe", "start": start, "end": end})
+    return _ok_result(result)
 
 
 @mcp.tool(name="input_text")
@@ -263,9 +312,12 @@ async def press_key(key: str) -> CallToolResult:
     except HandsBindError as exc:
         return _failure("press_key", str(exc))
     try:
-        return _ok_result(await session.press_key(key))
+        result = await session.press_key(key)
     except Exception as exc:
         return _failure("press_key", f"Error during press_key: {exc}")
+    if result.ok:
+        runtime.trace.note({"op": "press_key", "key": key})
+    return _ok_result(result)
 
 
 @mcp.tool(name="manage_app")
@@ -328,9 +380,12 @@ async def wait_for_delay(time_in_ms: int) -> CallToolResult:
     except HandsBindError as exc:
         return _failure("wait_for_delay", str(exc))
     try:
-        return _ok_result(await session.wait_for_delay(time_in_ms))
+        result = await session.wait_for_delay(time_in_ms)
     except Exception as exc:
         return _failure("wait_for_delay", f"Error during wait_for_delay: {exc}")
+    if result.ok:
+        runtime.trace.note({"op": "wait", "ms": time_in_ms})
+    return _ok_result(result)
 
 
 @mcp.tool(name="wait_for_text")
@@ -364,6 +419,177 @@ async def click_sequence(sequence: list[list[int]], delay_ms: int = 50) -> CallT
         return _ok_result(await session.click_sequence(sequence, delay_ms=delay_ms))
     except Exception as exc:
         return _failure("click_sequence", f"Error during click_sequence: {exc}")
+
+
+def _repo_catalog() -> Path:
+    return catalog_path(Path(__file__).resolve().parents[2])
+
+
+@mcp.tool(name="begin_row")
+async def begin_row(title: str) -> str:
+    """Start learning one task row. Refuses while the previous row is still open."""
+    name = title.strip()
+    if not name:
+        return _json({"ok": False, "reason": "行名是空的"})
+    try:
+        runtime.trace.begin(name)
+    except RowBusy as exc:
+        return _json({"ok": False, "reason": str(exc), "open_title": exc.title})
+    return _json({"ok": True, "title": name})
+
+
+@mcp.tool(name="end_row")
+async def end_row(abandon: bool = False) -> str:
+    """Look once and, if the sheet shows this row is done, store its steps.
+
+    ``abandon`` closes the row without storing steps. Use it only after the
+    catalog row has been marked skip. A row that is not done stays open.
+    """
+    if not runtime.trace.title:
+        return _json({"ok": False, "learned": False, "reason": "没有进行中的行"})
+    title = runtime.trace.title
+    if abandon:
+        runtime.trace.abandon()
+        return _json({"ok": True, "learned": False, "title": title, "abandon": True})
+    try:
+        session = runtime.ensure()
+    except HandsBindError as exc:
+        return _json({"ok": False, "learned": False, "reason": str(exc)})
+    try:
+        obs, _image = await session.look(include_image=False, settle_ms=300)
+    except Exception as exc:
+        return _json({"ok": False, "learned": False, "reason": f"看屏失败：{exc}"})
+    if not (obs.ok and obs.hierarchy_ok):
+        return _json({"ok": False, "learned": False, "reason": "看屏失败"})
+    _note_look(session)
+    judged = judge_row(session.elements, title)
+    if not judged["learned"]:
+        return _json({"ok": True, "learned": False, "title": title, "reason": judged["reason"]})
+    steps = compress_steps(runtime.trace.events, title)
+    if not steps:
+        return _json({"ok": True, "learned": False, "title": title, "reason": "没有可按文字重放的点击"})
+    try:
+        row = store_steps(_repo_catalog(), title, steps)
+    except ValueError as exc:
+        return _json({"ok": False, "learned": False, "title": title, "reason": str(exc)})
+    runtime.trace.finish(learned=True)
+    return _json(
+        {
+            "ok": True,
+            "learned": True,
+            "title": title,
+            "button": judged["button"],
+            "steps": row.get("steps") or [],
+        }
+    )
+
+
+@mcp.tool(name="replay_row")
+async def replay_row(title: str) -> str:
+    """Play the stored steps for one row inside this session. One result, no images."""
+    name = title.strip()
+    if runtime.trace.title:
+        return _json(
+            {
+                "ok": False,
+                "reason": f"上一行「{runtime.trace.title}」还没 end_row",
+                "open_title": runtime.trace.title,
+            }
+        )
+    catalog = _repo_catalog()
+    try:
+        row = find_catalog_row(load_catalog(catalog), name)
+    except (OSError, json.JSONDecodeError) as exc:
+        return _json({"ok": False, "reason": f"读清单失败：{exc}"})
+    steps = list((row or {}).get("steps") or [])
+    if not steps:
+        return _json({"ok": False, "title": name, "reason": "没有步骤"})
+    try:
+        session = runtime.ensure()
+    except HandsBindError as exc:
+        return _json({"ok": False, "reason": str(exc)})
+    deadline = time.monotonic() + 60
+    for index, step in enumerate(steps, start=1):
+        if time.monotonic() > deadline:
+            failure = note_replay_failure(catalog, name)
+            return _json(
+                {"ok": False, "title": name, "step": index, "reason": "超过一分钟", **failure}
+            )
+        try:
+            obs, _image = await session.look(include_image=False, settle_ms=200)
+        except Exception as exc:
+            failure = note_replay_failure(catalog, name)
+            return _json({"ok": False, "title": name, "step": index, "reason": str(exc), **failure})
+        if not (obs.ok and obs.hierarchy_ok):
+            failure = note_replay_failure(catalog, name)
+            return _json({"ok": False, "title": name, "step": index, "reason": "看屏失败", **failure})
+        _note_look(session)
+        op = step.get("op")
+        if op == "tap_text":
+            point = find_tap(session.elements, step, session.width, session.height)
+            if point is None:
+                if step.get("optional"):
+                    continue
+                failure = note_replay_failure(catalog, name)
+                return _json(
+                    {
+                        "ok": False,
+                        "title": name,
+                        "step": index,
+                        "reason": "屏幕上没有这一步的字",
+                        "texts": _look_texts(session),
+                        **failure,
+                    }
+                )
+            result = await session.click(point)
+            if result.ok:
+                runtime.trace.note(
+                    {"op": "click", "text": step.get("text") or "", "xy": result.normalized_coordinates}
+                )
+            elif not step.get("optional"):
+                failure = note_replay_failure(catalog, name)
+                return _json(
+                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure}
+                )
+        elif op == "wait":
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            millis = min(int(step.get("ms") or 0), max(0, remaining_ms))
+            if millis:
+                await session.wait_for_delay(millis)
+                runtime.trace.note({"op": "wait", "ms": millis})
+        elif op == "key":
+            result = await session.press_key(str(step.get("key") or "back"))
+            if result.ok:
+                runtime.trace.note({"op": "press_key", "key": step.get("key") or "back"})
+            else:
+                failure = note_replay_failure(catalog, name)
+                return _json(
+                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure}
+                )
+    try:
+        obs, _image = await session.look(include_image=False, settle_ms=300)
+    except Exception as exc:
+        failure = note_replay_failure(catalog, name)
+        return _json({"ok": False, "title": name, "reason": str(exc), **failure})
+    if not (obs.ok and obs.hierarchy_ok):
+        failure = note_replay_failure(catalog, name)
+        return _json({"ok": False, "title": name, "reason": "看屏失败", **failure})
+    _note_look(session)
+    judged = judge_row(session.elements, name)
+    if not judged["learned"]:
+        failure = note_replay_failure(catalog, name)
+        return _json(
+            {
+                "ok": False,
+                "title": name,
+                "reason": judged["reason"],
+                "button": judged["button"],
+                "texts": _look_texts(session),
+                **failure,
+            }
+        )
+    note_replay_success(catalog, name)
+    return _json({"ok": True, "title": name, "button": judged["button"], "reason": judged["reason"]})
 
 
 def _registered_tool_names() -> set[str]:
