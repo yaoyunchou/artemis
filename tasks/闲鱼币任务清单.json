@@ -1,0 +1,189 @@
+{
+  "package": "com.taobao.idlefish",
+  "rows": [
+    {
+      "title": "去消了还想消玩1关",
+      "run": "skip",
+      "script": null,
+      "script_fails": 3,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "去点点消不停玩1关",
+      "run": "skip",
+      "script": null,
+      "script_fails": 3,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "去玩闲鱼游戏15s",
+      "run": "skip",
+      "script": null,
+      "script_fails": 3,
+      "seconds": 0,
+      "reason": "打开后是升级页，只能点返回，不能下载"
+    },
+    {
+      "title": "去赵云和阿斗玩1关",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "玩消了还想消游戏1关",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "浏览推荐的国补商品",
+      "run": "skip",
+      "script": null,
+      "script_fails": 3,
+      "seconds": 0,
+      "reason": "这一行页面有问题，直接跳过"
+    },
+    {
+      "title": "发布一件新宝贝",
+      "run": "skip",
+      "script": null,
+      "script_fails": 3,
+      "seconds": 0,
+      "reason": "去完成时不打开发布页"
+    },
+    {
+      "title": "发布一件优推抵扣宝贝",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "去完成时不打开发布页"
+    },
+    {
+      "title": "用闲鱼相机发宝贝",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "去完成时不打开发布或相机发布"
+    },
+    {
+      "title": "买到或卖出一件宝贝",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "要真实成交，不付款、不发货"
+    },
+    {
+      "title": "参与一次拼手气红包",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "不要付款"
+    },
+    {
+      "title": "好物夺宝试试手气",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "不要付款，不要填地址，不要开始抽奖"
+    },
+    {
+      "title": "去淘宝签到领红包",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去大众点评赢免单",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去一淘签到领现金",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去快手极速版领红包",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "不要点下载或登录"
+    },
+    {
+      "title": "去百度逛一逛",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去淘特领好礼",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去点淘赚零花钱",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "看15秒视频领奖励",
+      "run": "done",
+      "script": "browse_ad",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "4/4 已完成。按钮又变回去完成时重新打开。进去后如果是游戏，按页面提示进入并停留后再回列表"
+    },
+    {
+      "title": "看视频领奖励",
+      "run": "done",
+      "script": "browse_ad",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "4/4 已完成。按钮又变回去完成时重新打开。进去后如果是游戏，按页面提示进入并停留后再回列表"
+    },
+    {
+      "title": "观看视频领取奖励",
+      "run": "done",
+      "script": "browse_ad",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "领取后这一行从列表消失。进去后如果是游戏，按页面提示进入并停留后再回列表"
+    },
+    {
+      "title": "去头条玩一玩",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "领取后这一行从列表消失"
+    }
+  ]
+}

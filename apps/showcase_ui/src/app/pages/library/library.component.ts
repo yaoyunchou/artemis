@@ -8,7 +8,28 @@ interface PersonalScript {
   seconds: number;
   start_button: string;
   done_button: string;
+  package?: string | null;
 }
+
+interface AppScriptVersion {
+  id: string;
+  version: number;
+  reason: string;
+  status: string;
+  created_at: number;
+  run_count: number;
+  last_completed?: number | null;
+  last_failed?: number | null;
+  last_entered?: number | null;
+}
+
+interface AppScriptInfo {
+  package: string;
+  current: AppScriptVersion | null;
+  versions: AppScriptVersion[];
+}
+
+const DEFAULT_PACKAGE = 'com.taobao.idlefish';
 
 interface PersonalSubtask {
   id: string;
@@ -68,6 +89,9 @@ export class LibraryComponent implements OnInit {
   public readonly openLogId = signal<string | null>(null);
   public readonly message = signal<string | null>(null);
   public readonly busy = signal(false);
+  public readonly appScript = signal<AppScriptInfo | null>(null);
+  public readonly openVersionId = signal<string | null>(null);
+  public readonly versionDiff = signal('');
 
   public ngOnInit(): void {
     this.reload();
@@ -84,6 +108,61 @@ export class LibraryComponent implements OnInit {
     this.editingSubtaskId.set(null);
     this.openLogId.set(null);
     this.loadRuns(task.id);
+    this.loadAppScript(task);
+  }
+
+  public statusLabel(status: string): string {
+    const labels: Record<string, string> = {
+      current: '当前',
+      retired: '旧版',
+      rejected: '没通过检查',
+      rolled_back: '已退回'
+    };
+    return labels[status] || status;
+  }
+
+  public resultLabel(item: AppScriptVersion): string {
+    if (!item.run_count) {
+      return '还没跑过';
+    }
+    const entered = item.last_entered ? '' : '，没进列表';
+    return `跑了 ${item.run_count} 次，最近完成 ${item.last_completed || 0} 条、失败 ${item.last_failed || 0} 条${entered}`;
+  }
+
+  public toggleVersion(item: AppScriptVersion): void {
+    const info = this.appScript();
+    if (!info) {
+      return;
+    }
+    if (this.openVersionId() === item.id) {
+      this.openVersionId.set(null);
+      return;
+    }
+    this.openVersionId.set(item.id);
+    this.versionDiff.set('读取中…');
+    this.agent.getAppScriptVersion(info.package, item.id).subscribe({
+      next: (payload) => this.versionDiff.set(payload.diff || '和上一版没有差异，或这是第一版。'),
+      error: () => this.versionDiff.set('读取这一版失败。')
+    });
+  }
+
+  public rollbackTo(item: AppScriptVersion): void {
+    const info = this.appScript();
+    if (!info || this.busy()) {
+      return;
+    }
+    this.busy.set(true);
+    this.agent.rollbackAppScript(info.package, item.id).subscribe({
+      next: (payload: AppScriptInfo) => {
+        this.appScript.set(payload);
+        this.busy.set(false);
+        this.message.set(`App 脚本已退回第 ${item.version} 版。`);
+      },
+      error: (err) => {
+        this.busy.set(false);
+        this.message.set(err?.error?.detail || '退回失败。');
+      }
+    });
   }
 
   public savePrompt(): void {
@@ -183,6 +262,7 @@ export class LibraryComponent implements OnInit {
         this.busy.set(false);
         this.message.set('已加入队列。脚本小任务 60 秒、模型小任务 120 秒，超时会跳过并记下原因。');
         this.loadRuns(task.id);
+        this.loadAppScript(task);
       },
       error: () => {
         this.busy.set(false);
@@ -236,6 +316,15 @@ export class LibraryComponent implements OnInit {
     this.agent.listPersonalRuns(taskId).subscribe({
       next: (payload) => this.runs.set(payload.runs || []),
       error: () => this.runs.set([])
+    });
+  }
+
+  private loadAppScript(task: PersonalTask): void {
+    const packageName = task.subtasks.find((item) => item.script?.package)?.script?.package || DEFAULT_PACKAGE;
+    this.openVersionId.set(null);
+    this.agent.getAppScript(packageName).subscribe({
+      next: (payload: AppScriptInfo) => this.appScript.set(payload),
+      error: () => this.appScript.set(null)
     });
   }
 

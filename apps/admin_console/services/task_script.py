@@ -180,104 +180,6 @@ def foreground_packages(xml: str) -> set[str]:
     return set(re.findall(r'package="([^"]+)"', xml or ""))
 
 
-def on_task_list(elements: list[dict[str, Any]]) -> bool:
-    """True once the reward sheet is up, even if the tab label is already gone.
-
-    Opening the orange badge often lands directly on 「得骰子赚闲鱼币」. That
-    sheet is the list: it has 「去完成」 / 「领取奖励」 and does not always keep
-    a separate 「任务奖励」 tab on screen.
-    """
-    texts = [_text(element) for element in elements]
-    has_action = any(text in ("领取奖励", "去完成", "已完成") for text in texts)
-    has_sheet = any(
-        any(token in text for token in ("任务奖励", "得骰子赚闲鱼币", "累积任务奖励"))
-        for text in texts
-    )
-    return has_action and has_sheet
-
-
-def coin_entry_point(elements: list[dict[str, Any]]) -> tuple[int, int]:
-    """Where to tap the orange 领 badge on the 闲鱼 home header.
-
-    The badge is a drawing above the search button and often has no text.
-    Past runs opened it at about 92.5% of the width and 5.5% of the height,
-    which sits just above ``search_btn``.
-    """
-    badge = find_badge(elements)
-    if badge is not None:
-        return center(badge)
-    width, height = screen_size(elements)
-    for element in elements:
-        resource_id = str(element.get("resource_id") or "")
-        if resource_id.endswith("search_btn"):
-            bounds = element.get("bounds") or [0, 0, 0, 0]
-            button_height = max(1, int(bounds[3]) - int(bounds[1]))
-            return int(bounds[2]) - button_height // 2, max(0, int(bounds[1]) - button_height)
-    return int(width * 0.925), int(height * 0.055)
-
-
-_DICE_BADGE = re.compile(r"^[×xX✕](\d+)$")
-
-
-def dice_badge(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The ×N badge on the dice. The dice itself is an image with no text."""
-    for element in elements:
-        if _DICE_BADGE.match(_text(element).replace(" ", "")):
-            return element
-    return None
-
-
-def dice_left(elements: list[dict[str, Any]]) -> int | None:
-    badge = dice_badge(elements)
-    if badge is None:
-        return None
-    match = _DICE_BADGE.match(_text(badge).replace(" ", ""))
-    return int(match.group(1)) if match else None
-
-
-def dice_point(elements: list[dict[str, Any]]) -> tuple[int, int] | None:
-    """Center of the 扔骰子寻宝 button, which sits under its ×N badge."""
-    badge = dice_badge(elements)
-    if badge is None:
-        return None
-    width, _height = screen_size(elements)
-    bounds = badge.get("bounds") or [0, 0, 0, 0]
-    return width // 2, int(bounds[3]) + 80
-
-
-def earn_dice_point(elements: list[dict[str, Any]]) -> tuple[int, int] | None:
-    """The 赚骰子 icon, which opens the reward sheet.
-
-    The 任务奖励 label is visible to accessibility, but injected taps do not
-    activate that web button. 赚骰子 does. Its 领 badge only shows while
-    something is claimable, so fall back to its place beside the dice badge.
-    """
-    width, height = screen_size(elements)
-    best: tuple[int, int] | None = None
-    best_area = 10**12
-    for element in elements:
-        if _text(element) != "领":
-            continue
-        x_pos, y_pos = center(element)
-        if y_pos < height * 0.35 or y_pos > height * 0.58 or x_pos < width * 0.55:
-            continue
-        area = _area(element)
-        if area < best_area:
-            best = (x_pos, y_pos)
-            best_area = area
-    if best is not None:
-        return best
-    badge = dice_badge(elements)
-    if badge is None:
-        return None
-    x_pos, y_pos = center(badge)
-    return x_pos + 199, y_pos + 110
-
-
-def is_home_screen(elements: list[dict[str, Any]]) -> bool:
-    return any(str(element.get("resource_id") or "").endswith("search_btn") for element in elements)
-
-
 def is_locked(xml: str, elements: list[dict[str, Any]]) -> bool:
     packages = foreground_packages(xml)
     if packages and packages != {"com.android.systemui"}:
@@ -288,48 +190,18 @@ def is_locked(xml: str, elements: list[dict[str, Any]]) -> bool:
 _CLASS_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
-def _covers_screen(element: dict[str, Any], width: int, height: int) -> bool:
+def looks_like_class_name(text: str) -> bool:
+    """Container names such as WVUCWebView leak into the tree as text."""
+    return "WebView" in text or "webview" in text or bool(_CLASS_NAME.match(text))
+
+
+def covers_screen(element: dict[str, Any], width: int, height: int) -> bool:
     bounds = element.get("bounds") or []
     if len(bounds) != 4:
         return False
     box_width = int(bounds[2]) - int(bounds[0])
     box_height = int(bounds[3]) - int(bounds[1])
     return box_width >= width * 0.85 and box_height >= height * 0.7
-
-
-_NOT_A_ROW = ("闲鱼币兑曝光", "闲鱼币抵扣", "现金夺宝", "急速卖", "玩法规则", "签到玩法")
-_GAME_ROW = ("玩1关", "小游戏", "合成", "升级火炉", "消不停", "还想消")
-
-
-def is_game_row(title: str) -> bool:
-    """Rows that need a round of a mini game. The prompt says to skip those."""
-    return any(token in title for token in _GAME_ROW)
-
-
-def is_row_title(element: dict[str, Any], width: int, height: int) -> bool:
-    """A task-list row, not the web view, the shop block, or a rules page."""
-    text = _text(element)
-    if len(text) < 4 or len(text) > 40 or text in _SKIP_TITLES:
-        return False
-    if any(token in text for token in _NOT_A_ROW):
-        return False
-    if "WebView" in text or "webview" in text or _CLASS_NAME.match(text):
-        return False
-    if _covers_screen(element, width, height):
-        return False
-    return True
-
-
-def list_titles(elements: list[dict[str, Any]]) -> list[str]:
-    width, height = screen_size(elements)
-    titles: list[str] = []
-    for element in elements:
-        text = _text(element)
-        if not is_row_title(element, width, height):
-            continue
-        if text not in titles:
-            titles.append(text)
-    return titles
 
 
 def find_exact(elements: list[dict[str, Any]], *labels: str) -> dict[str, Any] | None:
@@ -349,27 +221,6 @@ def find_label(elements: list[dict[str, Any]], label: str) -> dict[str, Any] | N
     if not matches:
         return None
     return min(matches, key=_area)
-
-
-def find_badge(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Top-right 领 / 签到 icon. Ignores the task rows lower on the page."""
-    width, height = screen_size(elements)
-    best: dict[str, Any] | None = None
-    best_area = 10**12
-    for element in elements:
-        text = _text(element)
-        if "领" not in text and "签到" not in text:
-            continue
-        if "任务奖励" in text or "领取奖励" in text:
-            continue
-        x_pos, y_pos = center(element)
-        if y_pos > height * 0.22 or x_pos < width * 0.62:
-            continue
-        area = _area(element)
-        if area < best_area:
-            best = element
-            best_area = area
-    return best
 
 
 def row_action(
@@ -420,8 +271,16 @@ def center(element: dict[str, Any]) -> tuple[int, int]:
     return (int(bounds[0]) + int(bounds[2])) // 2, (int(bounds[1]) + int(bounds[3])) // 2
 
 
+def text_of(element: dict[str, Any]) -> str:
+    return str(element.get("text") or "").strip()
+
+
 def _text(element: dict[str, Any]) -> str:
     return str(element.get("text") or "").strip()
+
+
+def area(element: dict[str, Any]) -> int:
+    return _area(element)
 
 
 def _area(element: dict[str, Any]) -> int:

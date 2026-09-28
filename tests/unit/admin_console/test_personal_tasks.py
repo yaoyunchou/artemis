@@ -1,13 +1,15 @@
 from apps.admin_console.services import personal_task_runner
-from apps.admin_console.services.list_script_worker import dice_left, rows_to_start
-from apps.admin_console.services.task_script import (
-    coin_entry_point,
-    dice_point,
-    earn_dice_point,
-    is_game_row,
-    is_locked,
-    on_task_list,
-)
+import time
+from pathlib import Path
+
+from apps.admin_console.services.app_script_host import load_module
+from apps.admin_console.services.task_script import is_locked
+
+_SCRIPT = Path(__file__).resolve().parents[3] / "tasks" / "scripts" / "idlefish.py"
+
+
+def _idlefish():
+    return load_module(_SCRIPT.read_text(encoding="utf-8"), "com.taobao.idlefish")
 from apps.admin_console.services.personal_task_store import PersonalTaskStore
 from apps.admin_console.services.prompt_recipe import (
     AI_LIMIT_SECONDS,
@@ -177,6 +179,9 @@ class _FakePhone:
         self.elements = elements
         self.taps: list[tuple[int, int]] = []
 
+        self.notes: list[tuple[str, str, str]] = []
+        self.last_xml = ""
+
     def dump(self):
         return "", self.elements
 
@@ -188,6 +193,29 @@ class _FakePhone:
 
     def back(self) -> None:
         return None
+
+    def launch(self, package: str) -> None:
+        return None
+
+    def note(self, tag: str, text: str = "") -> None:
+        self.notes.append((tag, text, ""))
+
+
+class _SteppedPhone(_FakePhone):
+    """Each tap advances to the next screen."""
+
+    def __init__(self, screens: list[list[dict]]):
+        super().__init__(screens[0])
+        self.screens = screens
+        self.index = 0
+
+    def dump(self):
+        self.elements = self.screens[min(self.index, len(self.screens) - 1)]
+        return "", self.elements
+
+    def tap(self, x_pos: int, y_pos: int) -> None:
+        super().tap(x_pos, y_pos)
+        self.index += 1
 
 
 def test_script_completes_only_after_the_prompt_done_button_is_tapped():
@@ -210,6 +238,7 @@ def test_script_completes_only_after_the_prompt_done_button_is_tapped():
                 "done_hint": None,
             },
         },
+        _idlefish(),
     )
     assert status == "completed"
     assert "领取奖励" in reason
@@ -218,10 +247,8 @@ def test_script_completes_only_after_the_prompt_done_button_is_tapped():
 
 
 def test_script_timeout_records_the_reason_and_the_parent_continues(tmp_path, monkeypatch):
-    from apps.admin_console.services import list_script_worker
-
     monkeypatch.setattr(personal_task_runner, "SCRIPT_LIMIT_SECONDS", 0.05)
-    monkeypatch.setattr(list_script_worker.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     phone = _FakePhone([])
     status, reason, log_text = personal_task_runner.run_script_subtask(
         phone,
@@ -235,6 +262,7 @@ def test_script_timeout_records_the_reason_and_the_parent_continues(tmp_path, mo
                 "done_hint": None,
             },
         },
+        _idlefish(),
     )
     assert status == "failed"
     assert "超过 0 秒" in reason or "超过 0 秒" in log_text or "未找到这一行" in log_text
@@ -261,75 +289,10 @@ def test_script_timeout_records_the_reason_and_the_parent_continues(tmp_path, mo
     assert saved["logs"][1]["log_text"] == "模型日志"
 
 
-def test_coin_badge_is_above_the_search_button_not_the_feed_chip():
-    elements = [
-        {
-            "text": "搜索，按钮",
-            "resource_id": "com.taobao.idlefish:id/search_btn",
-            "bounds": [921, 214, 1037, 288],
-        },
-        {
-            "text": "领红包",
-            "resource_id": "com.taobao.idlefish:id/text",
-            "bounds": [961, 558, 1080, 2400],
-        },
-    ]
-    x_pos, y_pos = coin_entry_point(elements)
-    assert 960 <= x_pos <= 1040
-    assert 100 <= y_pos <= 180
-
-
-def test_earn_dice_badge_is_the_mid_screen_ling_not_the_header():
-    elements = [
-        {"text": "", "bounds": [0, 0, 1080, 2400]},
-        {"text": "领红包", "bounds": [961, 558, 1080, 610]},
-        {"text": "任务奖励", "bounds": [840, 317, 1050, 391]},
-        {"text": "领", "bounds": [813, 1055, 882, 1105]},
-    ]
-    assert earn_dice_point(elements) == (847, 1080)
-
-
-def test_dice_badge_is_the_remaining_roll_count():
-    assert dice_left([{"text": "×11", "bounds": [601, 942, 695, 997]}]) == 11
-    assert dice_left([{"text": "扔骰子寻宝", "bounds": [400, 900, 680, 980]}]) is None
-
-
-def test_dice_and_earn_dice_are_found_from_the_badge_without_text():
-    board = [
-        {"text": "", "bounds": [0, 0, 1080, 2400]},
-        {"text": "×6", "bounds": [601, 942, 695, 997]},
-    ]
-    assert dice_point(board) == (540, 1077)
-    assert earn_dice_point(board) == (847, 1079)
-
-
-def test_lock_screen_and_game_rows_are_recognised():
+def test_lock_screen_is_recognised():
     xml = '<hierarchy><node package="com.android.systemui" /></hierarchy>'
     assert is_locked(xml, [{"text": "请用数字密码或指纹解锁", "bounds": [254, 529, 826, 599]}])
     assert not is_locked('<node package="com.taobao.idlefish" />', [{"text": "解锁", "bounds": [0, 0, 1, 1]}])
-    assert is_game_row("去消了还想消玩1关")
-    assert not is_game_row("去蚂蚁庄园逛一逛")
-
-
-def test_shop_label_under_the_board_is_not_a_task_row():
-    elements = [
-        {"text": "任务奖励", "bounds": [840, 200, 1050, 260]},
-        {"text": "闲鱼币兑曝光", "bounds": [52, 1375, 244, 1425]},
-        {"text": "去完成", "bounds": [860, 1360, 1000, 1420]},
-        {"text": "去蚂蚁庄园逛一逛", "bounds": [40, 900, 600, 960]},
-        {"text": "去完成", "bounds": [860, 900, 1000, 960]},
-    ]
-    assert rows_to_start(elements) == ["去蚂蚁庄园逛一逛"]
-
-
-def test_fullscreen_webview_is_not_a_task_row():
-    elements = [
-        {"text": "WVUCWebView", "bounds": [0, 0, 1080, 2358]},
-        {"text": "任务奖励", "bounds": [840, 317, 1050, 391]},
-        {"text": "去蚂蚁庄园逛一逛", "bounds": [40, 900, 600, 960]},
-        {"text": "去完成", "bounds": [860, 900, 1000, 960]},
-    ]
-    assert rows_to_start(elements) == ["去蚂蚁庄园逛一逛"]
 
 
 def test_a_model_transcript_does_not_mark_a_real_row_skipped():
@@ -350,6 +313,73 @@ def test_visible_catalog_row_runs_before_an_unknown_row():
     assert picked == ("去蚂蚁庄园逛一逛", catalog[0])
 
 
+def test_an_open_page_is_finished_from_its_own_content():
+    phone = _SteppedPhone(
+        [
+            [
+                {"text": "浏览推荐的国补商品", "bounds": [40, 400, 700, 480]},
+                {"text": "任务完成", "bounds": [400, 1800, 680, 1880]},
+            ],
+            [
+                {"text": "任务奖励", "bounds": [840, 200, 1050, 280]},
+                {"text": "浏览推荐的国补商品", "bounds": [40, 500, 700, 580]},
+                {"text": "领取奖励", "bounds": [800, 510, 1000, 570]},
+            ],
+        ]
+    )
+    status, reason, log_text = personal_task_runner.run_script_subtask(
+        phone,
+        {
+            "title": "浏览推荐的国补商品",
+            "script": {
+                "kind": "browse",
+                "seconds": 15,
+                "start_button": "去完成",
+                "done_button": "领取奖励",
+                "done_hint": "任务完成",
+            },
+        },
+        _idlefish(),
+    )
+    assert status == "completed"
+    assert "领取奖励" in reason
+    assert "页面上点了「任务完成」" in log_text
+    assert phone.taps[0] == (540, 1840)
+    assert phone.taps[1] == (900, 540)
+
+
+def test_a_page_that_is_not_the_list_does_not_stop_the_run():
+    pending = ["去蚂蚁庄园逛一逛"]
+    assert (
+        personal_task_runner._when_nothing_picked(
+            on_list=False,
+            pending=pending,
+            lines=["商品详情", "加入购物车"],
+            scrolls=4,
+            stop_checks=2,
+        )
+        == "work-page"
+    )
+    assert personal_task_runner._pending_on_page(pending, ["商品"]) is None
+    assert (
+        personal_task_runner._pending_on_page(
+            ["浏览推荐的国补商品"],
+            ["商品详情", "浏览推荐的国补商品", "任务完成"],
+        )
+        == "浏览推荐的国补商品"
+    )
+    assert (
+        personal_task_runner._when_nothing_picked(
+            on_list=True,
+            pending=pending,
+            lines=["别的任务", "去完成"],
+            scrolls=4,
+            stop_checks=2,
+        )
+        == "stop"
+    )
+
+
 def test_stop_only_after_pending_rows_are_finished_or_skipped():
     catalog = [
         {"title": "进入闲鱼币任务奖励列表", "prompt": "进入", "script": None, "fail_count": 0},
@@ -358,12 +388,3 @@ def test_stop_only_after_pending_rows_are_finished_or_skipped():
     ]
     assert personal_task_runner._pending_titles(catalog, set()) == ["去蚂蚁庄园逛一逛"]
     assert personal_task_runner._pending_titles(catalog, {"去蚂蚁庄园逛一逛"}) == []
-
-
-def test_reward_sheet_counts_without_a_separate_tab():
-    elements = [
-        {"text": "得骰子赚闲鱼币", "bounds": [40, 400, 700, 480]},
-        {"text": "去完成", "bounds": [800, 700, 1000, 760]},
-    ]
-    assert on_task_list(elements)
-    assert not on_task_list([{"text": "首页", "bounds": [0, 2200, 200, 2350]}])

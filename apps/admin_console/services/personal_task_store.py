@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS personal_subtask_logs (
     started_at REAL NOT NULL,
     finished_at REAL
 );
+CREATE TABLE IF NOT EXISTS app_script_versions (
+    id TEXT PRIMARY KEY,
+    package TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    parent_id TEXT,
+    created_at REAL NOT NULL,
+    run_count INTEGER NOT NULL DEFAULT 0,
+    last_completed INTEGER,
+    last_failed INTEGER,
+    last_entered INTEGER,
+    last_run_at REAL
+);
 """
 
 
@@ -327,6 +342,111 @@ class PersonalTaskStore:
         payload = dict(row)
         payload["logs"] = [dict(item) for item in logs]
         return payload
+
+    # ------------------------------------------------------------ App scripts
+    # status: current (the one that runs), retired, rejected (failed checks),
+    # rolled_back (ran worse than its parent).
+
+    def current_script(self, package: str) -> dict[str, Any] | None:
+        with db_session(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM app_script_versions WHERE package = ? AND status = 'current' "
+                "ORDER BY version DESC LIMIT 1",
+                (package,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_script_versions(self, package: str) -> list[dict[str, Any]]:
+        with db_session(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM app_script_versions WHERE package = ? ORDER BY version DESC",
+                (package,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_script_version(self, version_id: str) -> dict[str, Any]:
+        with db_session(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM app_script_versions WHERE id = ?", (version_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(version_id)
+        return dict(row)
+
+    def add_script_version(
+        self,
+        package: str,
+        code: str,
+        reason: str,
+        *,
+        status: str,
+        parent_id: str | None,
+    ) -> dict[str, Any]:
+        version_id = uuid.uuid4().hex
+        with db_session(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS top FROM app_script_versions WHERE package = ?",
+                (package,),
+            ).fetchone()
+            version = int(row["top"]) + 1
+            if status == "current":
+                conn.execute(
+                    "UPDATE app_script_versions SET status = 'retired' "
+                    "WHERE package = ? AND status = 'current'",
+                    (package,),
+                )
+            conn.execute(
+                """
+                INSERT INTO app_script_versions (
+                    id, package, version, code, reason, status, parent_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (version_id, package, version, code, reason, status, parent_id, time.time()),
+            )
+            conn.commit()
+        return self.get_script_version(version_id)
+
+    def set_current_script(self, version_id: str, *, previous_status: str = "retired") -> dict[str, Any]:
+        target = self.get_script_version(version_id)
+        with db_session(self.db_path) as conn:
+            conn.execute(
+                "UPDATE app_script_versions SET status = ? WHERE package = ? AND status = 'current'",
+                (previous_status, target["package"]),
+            )
+            conn.execute(
+                "UPDATE app_script_versions SET status = 'current' WHERE id = ?", (version_id,)
+            )
+            conn.commit()
+        return self.get_script_version(version_id)
+
+    def mark_script(self, version_id: str, status: str, reason: str | None = None) -> None:
+        with db_session(self.db_path) as conn:
+            if reason is None:
+                conn.execute(
+                    "UPDATE app_script_versions SET status = ? WHERE id = ?", (status, version_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE app_script_versions SET status = ?, reason = ? WHERE id = ?",
+                    (status, reason, version_id),
+                )
+            conn.commit()
+
+    def record_script_result(
+        self, version_id: str, *, completed: int, failed: int, entered: bool
+    ) -> dict[str, Any]:
+        with db_session(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE app_script_versions
+                SET run_count = run_count + 1, last_completed = ?, last_failed = ?,
+                    last_entered = ?, last_run_at = ?
+                WHERE id = ?
+                """,
+                (completed, failed, 1 if entered else 0, time.time(), version_id),
+            )
+            conn.commit()
+        return self.get_script_version(version_id)
 
     def _insert_subtasks(self, conn, task_id: str, subtasks: list[dict[str, Any]]) -> None:
         for position, item in enumerate(subtasks):

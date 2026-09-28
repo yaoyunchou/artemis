@@ -66,6 +66,40 @@
             }
           </ul>
 
+          <h3>App 脚本</h3>
+          @if (appScript(); as info) {
+            <section class="script-card">
+              <p>
+                <strong>{{ info.package }}</strong>
+                @if (info.current) {
+                  · 第 {{ info.current.version }} 版 · {{ info.current.reason }}
+                }
+              </p>
+              <p class="muted">每轮跑完，卡住或失败时由 AI 按日志改写这个脚本；通过检查才生效，下一轮变差会自动退回。</p>
+              <ul class="version-list">
+                @for (item of info.versions; track item.id) {
+                  <li>
+                    <div class="subtask-head">
+                      <span class="subtask-index">{{ item.version }}</span>
+                      <span class="badge" [class.script]="item.status === 'current'">{{ statusLabel(item.status) }}</span>
+                      <span class="version-reason">{{ item.reason }}</span>
+                      <button type="button" class="text-btn" (click)="toggleVersion(item)">差异</button>
+                      @if (item.status !== 'current') {
+                        <button type="button" class="text-btn" [disabled]="busy()" (click)="rollbackTo(item)">退回到这一版</button>
+                      }
+                    </div>
+                    <p class="reason">{{ resultLabel(item) }}</p>
+                    @if (openVersionId() === item.id) {
+                      <pre>{{ versionDiff() }}</pre>
+                    }
+                  </li>
+                }
+              </ul>
+            </section>
+          } @else {
+            <p class="muted">这个任务还没有 App 脚本。</p>
+          }
+
           <h3>运行日志</h3>
           @if (runs().length === 0) {
             <p class="muted">还没有运行记录。</p>

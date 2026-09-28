@@ -1,29 +1,24 @@
-"""Run one collected task. Subtasks are timed; the parent task is not."""
+"""Run one collected task. Subtasks are timed; the parent task is not.
+
+This file is the app-independent loop. How to open a list, where the dice
+are and which rows are real comes from ``tasks/scripts/<app>.py``.
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
 import time
-import urllib.request
 from typing import Any
 
+from artemis.config import WORKSPACE_ROOT
 from artemis.runtime.device_lock import DeviceExecutionLock
 
-from apps.admin_console.services.list_script_worker import (
-    Phone,
-    PhoneLocked,
-    claim_visible,
-    dice_badge_visible,
-    enter_list,
-    open_reward_sheet,
-    return_to_list,
-    roll_dice,
-    rows_to_start,
-)
+from apps.admin_console.services.app_script_host import load_app_script
+from apps.admin_console.services.app_script_maintainer import chat, maintain
+from apps.admin_console.services.list_script_worker import Phone, PhoneLocked
 from apps.admin_console.services.personal_task_store import PersonalTaskStore
 from apps.admin_console.services.prompt_recipe import (
     AI_LIMIT_SECONDS,
@@ -34,19 +29,54 @@ from apps.admin_console.services.prompt_recipe import (
     should_drop_row,
 )
 from apps.admin_console.services.screen_intersect import title_matches
-from apps.admin_console.services.task_script import (
-    center,
-    dice_left,
-    find_exact,
-    is_game_row,
-    on_task_list,
-    row_action,
-)
+from apps.admin_console.services.task_script import center, find_exact, row_action
+
+DEFAULT_PACKAGE = "com.taobao.idlefish"
 
 
-def run_script_subtask(phone: Phone, subtask: dict[str, Any]) -> tuple[str, str, str]:
+class Evidence:
+    """UI dumps saved at the moments a run went wrong. The script maintainer reads these."""
+
+    def __init__(self, run_id: str):
+        session = (os.environ.get("ARTEMIS_SESSION_ID") or "").strip()
+        base = WORKSPACE_ROOT / "traces" / (session or f"personal_{run_id}")
+        self.folder = base / "dumps"
+        self.stdout_path = base / "stdout.log"
+        self.items: list[dict[str, str]] = []
+
+    def save(self, phone: Any, reason: str, note: str = "") -> None:
+        xml = str(getattr(phone, "last_xml", "") or "")
+        if not xml:
+            return
+        self.folder.mkdir(parents=True, exist_ok=True)
+        path = self.folder / f"{len(self.items) + 1:02d}_{reason}.xml"
+        path.write_text(xml, encoding="utf-8")
+        self.items.append({"reason": reason, "note": note, "path": str(path)})
+
+    def collect_notes(self, phone: Any) -> None:
+        """Script-side events such as dice that never moved."""
+        for tag, text, xml in list(getattr(phone, "notes", []) or []):
+            if not xml:
+                continue
+            self.folder.mkdir(parents=True, exist_ok=True)
+            path = self.folder / f"{len(self.items) + 1:02d}_{tag}.xml"
+            path.write_text(xml, encoding="utf-8")
+            self.items.append({"reason": tag, "note": text, "path": str(path)})
+        if hasattr(phone, "notes"):
+            phone.notes.clear()
+
+    def stdout_tail(self, limit: int = 6000) -> str:
+        if not self.stdout_path.exists():
+            return ""
+        return self.stdout_path.read_text(encoding="utf-8", errors="replace")[-limit:]
+
+
+def run_script_subtask(
+    phone: Phone, subtask: dict[str, Any], script: Any = None
+) -> tuple[str, str, str]:
     """Tap the buttons named by this subtask's script. Stop at 60 seconds."""
     recipe = subtask.get("script") or {}
+    script = script or load_app_script(str(recipe.get("package") or DEFAULT_PACKAGE))
     title = str(subtask.get("title") or "")
     start_button = str(recipe.get("start_button") or "")
     done_button = str(recipe.get("done_button") or "")
@@ -58,12 +88,43 @@ def run_script_subtask(phone: Phone, subtask: dict[str, Any]) -> tuple[str, str,
     stage = "未找到这一行"
     lines = [f"脚本开始，限时 {SCRIPT_LIMIT_SECONDS} 秒。开始按钮「{start_button}」，完成按钮「{done_button}」。"]
     swipes = 0
+    page_swipes = 0
+    opened = False
+    dwell_until = 0.0
     while time.monotonic() < deadline:
         _xml, elements = phone.dump()
-        if not on_task_list(elements):
-            if not return_to_list(phone):
-                stage = "没有回到列表"
-                lines.append(stage)
+        if not script.on_task_list(elements):
+            shows = _page_shows_title(elements, title)
+            if shows or opened:
+                opened = True
+                if dwell_until <= 0:
+                    dwell_until = min(deadline, time.monotonic() + max(seconds, 0))
+                target = _open_page_target(elements, str(hint or ""), done_button)
+                if target is not None:
+                    label = str(target.get("text") or "")
+                    x_pos, y_pos = center(target)
+                    phone.tap(x_pos, y_pos)
+                    lines.append(f"页面上点了「{label}」")
+                    stage = "活动页"
+                    if label == done_button:
+                        return "completed", f"已点「{done_button}」", "\n".join(lines)
+                    continue
+                if time.monotonic() < dwell_until:
+                    stage = "活动页"
+                    if kind == "browse" and page_swipes < 2:
+                        phone.swipe_list(toward_top=False)
+                        page_swipes += 1
+                        lines.append("按页面往下看")
+                    else:
+                        time.sleep(2.0)
+                    continue
+            if script.return_to_list(phone):
+                lines.append("回到列表")
+                stage = "回到列表"
+                continue
+            stage = "没有回到列表"
+            lines.append(stage)
+            if not opened:
                 break
             continue
         action = row_action(elements, title, labels)
@@ -88,13 +149,22 @@ def run_script_subtask(phone: Phone, subtask: dict[str, Any]) -> tuple[str, str,
         if label == start_button:
             phone.tap(x_pos, y_pos)
             lines.append(f"点了「{start_button}」")
+            opened = True
+            dwell_until = min(deadline, time.monotonic() + max(seconds, 0))
             stage = "活动页"
             _dwell(phone, seconds, hint, deadline, lines)
-            if not _back_until_row(phone, title, labels, deadline, lines):
-                stage = "没有回到这一行"
-                break
+            if not _back_until_row(phone, script, title, labels, deadline, lines):
+                stage = "活动页"
+                continue
             stage = "回到列表"
             continue
+    _xml, elements = phone.dump()
+    if done_button and script.on_task_list(elements):
+        action = row_action(elements, title, (done_button,))
+        if action is not None:
+            phone.tap(action[1][0], action[1][1])
+            lines.append(f"到时后仍点了「{done_button}」")
+            return "completed", f"已点「{done_button}」", "\n".join(lines)
     _status, reason = budget_result(
         elapsed=SCRIPT_LIMIT_SECONDS,
         limit=SCRIPT_LIMIT_SECONDS,
@@ -112,8 +182,10 @@ def run_model_subtask(subtask: dict[str, Any], serial: str) -> tuple[str, str, s
     detail = str(subtask.get("detail") or "").strip()
     if title:
         prompt = (
-            f"只做闲鱼币任务列表中的「{title}」。{detail}\n"
-            "做完回到任务奖励列表。不要掷骰子，不要打开签到规则或玩法说明。"
+            f"完成「{title}」。{detail}\n"
+            "先看当前页面上的文字和按钮。已经在这个任务的页面上，就按页面内容做完，"
+            "不要因为现在不是任务列表就结束。做完再回到任务奖励列表。"
+            "不要掷骰子，不要打开签到规则或玩法说明。"
         )
     else:
         prompt = str(subtask.get("prompt") or "")
@@ -185,6 +257,14 @@ def _run_catalog_without_device(store: PersonalTaskStore, task: dict[str, Any], 
     store.finish_run(run_id, "completed" if failed == 0 else "partial", summary)
 
 
+def _task_package(task: dict[str, Any]) -> str:
+    for subtask in task["subtasks"]:
+        script = subtask.get("script") or {}
+        if script.get("package"):
+            return str(script["package"])
+    return DEFAULT_PACKAGE
+
+
 def execute(store: PersonalTaskStore, task_id: str, run_id: str, serial: str) -> str:
     """Walk the on-screen task list. The saved prompt is a catalog, not an order."""
     task = store.get_task(task_id)
@@ -192,75 +272,115 @@ def execute(store: PersonalTaskStore, task_id: str, run_id: str, serial: str) ->
         _run_catalog_without_device(store, task, run_id)
         saved = store.get_run(run_id)
         return str(saved.get("status") or "failed")
-    package = ""
-    for subtask in task["subtasks"]:
-        script = subtask.get("script") or {}
-        if script.get("package"):
-            package = str(script["package"])
-            break
+    package = _task_package(task)
+    script = load_app_script(package, store)
+    print(f"App 脚本 {package} 第 {script.SCRIPT_VERSION} 版", flush=True)
+    evidence = Evidence(run_id)
+    report: dict[str, Any] = {
+        "entered": False,
+        "completed": 0,
+        "failed": 0,
+        "script_failures": [],
+        "stopped_with_pending": [],
+    }
     phone = Phone(serial)
     phone.keep_awake()
-    if package:
-        print(f"打开 {package}", flush=True)
-        phone.launch(package)
-    if not enter_list(phone, package or None):
-        store.finish_run(run_id, "failed", "没有进入任务奖励列表")
-        print("没有进入任务奖励列表", flush=True)
-        return "failed"
-    rolled = roll_dice(phone, limit=20, leave_sheet=True)
-    if rolled:
-        print(f"按剩余次数掷骰子 {rolled} 次", flush=True)
+    print(f"打开 {package}", flush=True)
+    phone.launch(package)
+    if not script.enter_list(phone):
+        evidence.save(phone, "not_on_list")
+        print("还没进入任务奖励列表，按当前页面继续做", flush=True)
+    else:
+        report["entered"] = True
+        script.roll_dice(phone, leave_sheet=True)
     catalog = list(task["subtasks"])
     done: set[str] = set()
     outcomes: list[dict[str, Any]] = []
     scrolls = 0
     stop_checks = 0
+    page_model_calls = 0
     for _step in range(40):
-        claim_visible(phone)
+        script.claim_visible(phone)
+        script.roll_dice(phone, leave_sheet=False)
         _xml, elements = phone.dump()
-        if not on_task_list(elements) and dice_left(elements):
-            roll_dice(phone, leave_sheet=False)
-            _xml, elements = phone.dump()
-        visible = rows_to_start(elements)
+        on_list = bool(script.on_task_list(elements))
+        if on_list:
+            report["entered"] = True
+            page_model_calls = 0
+        lines = _screen_lines(elements)
+        visible = list(script.row_titles(elements)) if on_list else []
+        if not on_list:
+            hit = _pending_on_page(_pending_titles(catalog, done), lines)
+            if hit:
+                visible = [hit]
         for name in visible:
-            if name not in done and is_game_row(name) and _catalog_hit(name, catalog) is None:
+            if name not in done and script.is_skip_row(name) and _catalog_hit(name, catalog) is None:
                 done.add(name)
-                print(f"[小任务] {name} 要玩一局小游戏，按提示词跳过", flush=True)
+                print(f"[小任务] {name} 按脚本规则跳过", flush=True)
         picked = _pick_row(visible, catalog, done)
         if picked is None:
-            if not on_task_list(elements) and (return_to_list(phone) or enter_list(phone, package or None)):
-                scrolls = 0
-                continue
             pending = _pending_titles(catalog, done)
-            if not pending:
+            action = _when_nothing_picked(
+                on_list=on_list,
+                pending=pending,
+                lines=lines,
+                scrolls=scrolls,
+                stop_checks=stop_checks,
+            )
+            if action == "done":
                 print("收录里没标跳过的条目都处理过了", flush=True)
                 break
-            if scrolls < 4 and on_task_list(elements):
+            if action == "work-page":
+                evidence.save(phone, "off_list", "、".join(pending[:8]))
+                target = _open_page_target(elements, "", "")
+                if target is not None:
+                    x_pos, y_pos = center(target)
+                    phone.tap(x_pos, y_pos)
+                    print(f"页面上点了「{target.get('text')}」", flush=True)
+                    continue
+                if script.return_to_list(phone):
+                    scrolls = 0
+                    continue
+                _xml, elements = phone.dump()
+                if script.on_task_list(elements):
+                    continue
+                hit = _pending_on_page(pending, _screen_lines(elements))
+                if hit:
+                    picked = (hit, _catalog_hit(hit, catalog))
+                elif page_model_calls < 4:
+                    page_model_calls += 1
+                    _finish_open_page(pending, _screen_lines(elements), serial)
+                    continue
+                else:
+                    print("还不是列表，再按页面进一次", flush=True)
+                    script.enter_list(phone)
+                    continue
+            elif action == "scroll":
                 phone.swipe_list(toward_top=False)
                 scrolls += 1
                 continue
-            still_visible = [
-                name for name in pending if title_matches(name, _screen_lines(elements))
-            ]
-            if still_visible and on_task_list(elements):
+            elif action == "rewind":
                 scrolls = 0
                 phone.swipe_list(toward_top=True)
                 continue
-            if stop_checks >= 2:
-                print(f"还有未完成收录，已询问两次，停止：{'、'.join(pending[:8])}", flush=True)
+            elif action == "stop":
+                print(f"列表已打开，询问两次后仍没有这些收录，停止：{'、'.join(pending[:8])}", flush=True)
+                report["stopped_with_pending"] = pending
                 break
-            stop_checks += 1
-            verdict = _judge_stop(_screen_lines(elements), pending)
-            print(f"未完成且未跳过：{'、'.join(pending[:8])}。模型判断：{verdict}", flush=True)
-            if verdict == "继续":
-                scrolls = 0
-                if not on_task_list(elements):
-                    enter_list(phone, package or None)
-                else:
+            else:
+                evidence.save(phone, "stop_check", "、".join(pending[:8]))
+                stop_checks += 1
+                verdict = _judge_stop(lines, pending)
+                print(f"未完成且未跳过：{'、'.join(pending[:8])}。模型判断：{verdict}", flush=True)
+                if verdict == "继续":
+                    scrolls = 0
                     for _ in range(4):
                         phone.swipe_list(toward_top=True)
-                continue
-            break
+                    continue
+                report["stopped_with_pending"] = pending
+                break
+        if picked is None:
+            continue
         scrolls = 0
         title, match = picked
         done.add(title)
@@ -274,15 +394,18 @@ def execute(store: PersonalTaskStore, task_id: str, run_id: str, serial: str) ->
         if _is_skipped(match):
             status, reason, log_text = "skipped", "已标记直接跳过", "跳过"
         elif match.get("runner") == "script" and match.get("script"):
-            status, reason, log_text = run_script_subtask(phone, match)
+            status, reason, log_text = run_script_subtask(phone, match, script)
+            if status == "failed":
+                evidence.save(phone, "script_failed", title)
+                report["script_failures"].append({"title": title, "reason": reason})
         else:
             status, reason, log_text = run_model_subtask(match, serial)
-        claimed = claim_visible(phone)
-        rolled = roll_dice(phone, leave_sheet=True)
+        claimed = script.claim_visible(phone)
+        rolled = script.roll_dice(phone, leave_sheet=True)
         if claimed or rolled:
             reason = f"{reason}。领取 {claimed} 次，掷骰子 {rolled} 次"
             log_text = f"{log_text}\n领取奖励 {claimed} 次，掷骰子 {rolled} 次"
-        finished = time.time()
+        evidence.collect_notes(phone)
         store.add_subtask_log(
             run_id=run_id,
             subtask_id=str(match["id"]),
@@ -293,7 +416,7 @@ def execute(store: PersonalTaskStore, task_id: str, run_id: str, serial: str) ->
             reason=reason,
             log_text=log_text,
             started_at=started,
-            finished_at=finished,
+            finished_at=time.time(),
         )
         outcomes.append(
             {
@@ -305,13 +428,51 @@ def execute(store: PersonalTaskStore, task_id: str, run_id: str, serial: str) ->
             }
         )
         print(f"[小任务] {title} → {status} {reason}", flush=True)
+    evidence.collect_notes(phone)
+    pending_left = _pending_titles(catalog, done)
+    if pending_left and not report.get("stopped_with_pending"):
+        report["stopped_with_pending"] = pending_left
+    if not report["entered"] and not outcomes:
+        store.finish_run(run_id, "failed", "没有进入任务奖励列表")
+        print("没有进入任务奖励列表", flush=True)
+        _maintain(store, package, script, run_id, report, evidence)
+        return "failed"
     failed = sum(1 for item in outcomes if item["status"] == "failed")
+    completed = sum(1 for item in outcomes if item["status"] == "completed")
+    report["completed"] = completed
+    report["failed"] = failed
     summary = f"{len(outcomes) - failed} 条完成，{failed} 条未完成"
     outcome = "completed" if failed == 0 else "partial"
     store.finish_run(run_id, outcome, summary)
     print(summary, flush=True)
     _evolve_catalog(store, task_id, outcomes)
+    _maintain(store, package, script, run_id, report, evidence)
     return outcome
+
+
+def _maintain(
+    store: PersonalTaskStore,
+    package: str,
+    script: Any,
+    run_id: str,
+    report: dict[str, Any],
+    evidence: Evidence,
+) -> None:
+    try:
+        run = store.get_run(run_id)
+        message = maintain(
+            store,
+            package=package,
+            version_id=str(script.SCRIPT_VERSION_ID),
+            report=report,
+            evidence=evidence.items,
+            stdout_tail=evidence.stdout_tail(),
+            subtask_logs=run.get("logs") or [],
+        )
+    except Exception as exc:
+        message = f"脚本维护出错：{exc}"
+    if message:
+        print(message, flush=True)
 
 
 def _pick_row(
@@ -351,6 +512,71 @@ def _is_skipped(item: dict[str, Any]) -> bool:
     return "直接跳过" in blob or script.get("kind") == "skip" or int(item.get("fail_count") or 0) >= 3
 
 
+def _page_shows_title(elements: list[dict[str, Any]], title: str) -> bool:
+    """The open page names this task. Short fragments are not enough."""
+    name = title.split("。", 1)[0].strip()
+    if len(name) < 4:
+        return False
+    return any(name in str(element.get("text") or "") for element in elements)
+
+
+def _open_page_target(elements: list[dict[str, Any]], hint: str, done_button: str):
+    """A control on the current page that moves this task forward."""
+    labels = [hint] if hint else []
+    labels.extend(("任务完成", "跳过", "关闭广告", "残忍离开"))
+    if done_button:
+        labels.append(done_button)
+    return find_exact(elements, *labels)
+
+
+def _pending_on_page(pending: list[str], lines: list[str]) -> str | None:
+    """A catalog title written on this page. A shorter line does not count."""
+    blob = "\n".join(lines)
+    for title in pending:
+        name = title.split("。", 1)[0].strip()
+        if len(name) >= 4 and name in blob:
+            return title
+    return None
+
+
+def _when_nothing_picked(
+    *,
+    on_list: bool,
+    pending: list[str],
+    lines: list[str],
+    scrolls: int,
+    stop_checks: int,
+) -> str:
+    """What to do when this screen has no row to start.
+
+    Off the list the run keeps going: read the page and finish it.
+    Stopping is only for an open list whose remaining names are absent.
+    """
+    if not pending:
+        return "done"
+    if not on_list:
+        return "work-page"
+    if scrolls < 4:
+        return "scroll"
+    if any(title_matches(name, lines) for name in pending):
+        return "rewind"
+    if stop_checks >= 2:
+        return "stop"
+    return "ask"
+
+
+def _finish_open_page(pending: list[str], lines: list[str], serial: str) -> None:
+    """Ask the model to finish whatever this non-list page is, then get back."""
+    prompt = (
+        "当前屏幕不是闲鱼币任务奖励列表。根据页面上的文字和按钮把眼前这件事做完，"
+        "做完回到任务奖励列表。不要因为不是列表就结束，不要重新打开应用。\n"
+        f"屏幕文字：{'、'.join(lines[:30]) or '（空）'}\n"
+        f"还没做完：{'、'.join(pending[:8])}"
+    )
+    status, reason, _log_text = run_model_subtask({"title": "", "prompt": prompt}, serial)
+    print(f"[页面] {status} {reason}", flush=True)
+
+
 def _pending_titles(catalog: list[dict[str, Any]], done: set[str]) -> list[str]:
     """Catalog rows this run has not finished and has not marked 直接跳过."""
     pending: list[str] = []
@@ -379,12 +605,6 @@ def _judge_stop(visible: list[str], pending: list[str]) -> str:
     A missing key or a bad answer means 继续, so a model failure does not end
     a run that still has unfinished rows.
     """
-    key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    base = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-    model = (os.environ.get("ARTEMIS_MODEL") or "qwen3.8-flash").strip()
-    if not key:
-        print("没有模型密钥，未完成的收录继续做", flush=True)
-        return "继续"
     prompt = (
         "你在看闲鱼币任务奖励列表。只回答一个词：停止 或 继续。\n"
         "停止：任务奖励列表已经打开，并且这些名字在名单里确实没有。\n"
@@ -392,25 +612,9 @@ def _judge_stop(visible: list[str], pending: list[str]) -> str:
         f"屏幕文字：{'、'.join(visible) or '（空）'}\n"
         f"未完成且未标跳过：{'、'.join(pending)}"
     )
-    body = json.dumps(
-        {
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 8,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        f"{base}/chat/completions",
-        data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        answer = str(payload["choices"][0]["message"]["content"])
-    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        answer = chat(prompt, max_tokens=8, timeout=20)
+    except (OSError, ValueError, KeyError, IndexError, TypeError, RuntimeError) as exc:
         print(f"停止判断失败，继续做未完成的收录：{exc}", flush=True)
         return "继续"
     return "停止" if "停止" in answer and "继续" not in answer else "继续"
@@ -466,44 +670,48 @@ def _evolve_catalog(
 
 
 def _dwell(phone: Phone, seconds: int, hint: str | None, deadline: float, lines: list[str]) -> None:
+    """Stay on the open page and act on what it shows, until the stay time is up."""
     dwell_until = min(deadline, time.monotonic() + max(seconds, 0))
     while time.monotonic() < dwell_until:
         _xml, elements = phone.dump()
-        if hint and any(hint in str(element.get("text") or "") for element in elements):
-            lines.append(f"出现「{hint}」")
-            return
+        target = _open_page_target(elements, str(hint or ""), "")
+        if target is not None:
+            label = str(target.get("text") or "")
+            x_pos, y_pos = center(target)
+            phone.tap(x_pos, y_pos)
+            lines.append(f"页面上点了「{label}」")
+            if hint and hint in label:
+                return
+            continue
         time.sleep(2.0)
 
 
 def _back_until_row(
     phone: Phone,
+    script: Any,
     title: str,
     labels: tuple[str, ...],
     deadline: float,
     lines: list[str],
 ) -> bool:
-    for _ in range(5):
+    """Close ads on the activity page, then let the App script find the list again."""
+    for _ in range(2):
         if time.monotonic() >= deadline:
             return False
         _xml, elements = phone.dump()
-        if row_action(elements, title, labels) is not None:
+        if row_action(elements, title, labels) is not None or script.on_task_list(elements):
             return True
-        if on_task_list(elements):
-            return True
-        if dice_badge_visible(elements):
-            lines.append("回到闲鱼币页，点赚骰子打开列表")
-            open_reward_sheet(phone)
-            continue
         close = find_exact(elements, "关闭广告", "残忍离开", "关闭")
-        if close is not None:
-            x_pos, y_pos = center(close)
-            phone.tap(x_pos, y_pos)
-            lines.append("点了关闭")
-            continue
-        phone.back()
-        lines.append("返回")
-    _xml, elements = phone.dump()
-    return on_task_list(elements)
+        if close is None:
+            break
+        x_pos, y_pos = center(close)
+        phone.tap(x_pos, y_pos)
+        lines.append("点了关闭")
+    if time.monotonic() >= deadline:
+        return False
+    back_to_list = bool(script.return_to_list(phone))
+    lines.append("回到列表" if back_to_list else "没有回到列表")
+    return back_to_list
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0"><node text="人脸解锁" resource-id="" class="android.view.View" package="com.android.systemui" content-desc="" clickable="true" bounds="[482,399][598,477]" /><node text="请用数字密码或指纹解锁" resource-id="" class="android.view.View" package="com.android.systemui" content-desc="" clickable="false" bounds="[254,529][826,599]" /><node text="PIN 码区域" resource-id="" class="android.view.View" package="com.android.systemui" content-desc="" clickable="false" bounds="[217,1601][863,1714]" /></hierarchy>

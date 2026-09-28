@@ -27,6 +27,7 @@ from mcp_server.base import mcp as agent_mcp
 import mcp_server.tools  # noqa: F401
 from mcp_server.utils import env_utils
 from artemis.mcp.adb_server import mcp as adb_mcp
+from artemis.mcp.hands_session import HANDS_TOOL_NAMES
 from artemis.runtime import shutdown_awake_service, start_awake_service
 from artemis.utils.logger import get_logger
 from rich.console import Console
@@ -61,6 +62,67 @@ def _get_vscode_user_dir() -> Path:
         return Path.home() / ".config" / "Code" / "User"
 
 
+def _hands_launch(python_exe: str, project_root: str) -> dict:
+    """Launch config for the hands server. A script path avoids importing the agent MCP."""
+    return {
+        "command": python_exe,
+        "args": [str(Path(project_root) / "mcp_server" / "hands_entry.py")],
+        "env": {
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": project_root,
+        },
+    }
+
+
+def _add_hands_server(client: str, snippet: dict, python_exe: str, project_root: str) -> dict:
+    """Adds the ``artemis-hands`` server beside the existing agent server."""
+    launch = _hands_launch(python_exe, project_root)
+    with_cwd = {**launch, "cwd": project_root}
+    if client == "jetski":
+        snippet["mcpServers"]["artemis-hands"] = {
+            **with_cwd,
+            "disabledTools": [],
+            "tools": {name: {"eager": True} for name in HANDS_TOOL_NAMES},
+        }
+    elif client == "antigravity":
+        snippet["mcpServers"]["artemis-hands"] = {**with_cwd, "disabledTools": []}
+    elif client == "openclaw":
+        snippet["mcp"]["servers"]["artemis-hands"] = {
+            **with_cwd,
+            "enabled": True,
+            "connectionTimeoutMs": 120000,
+        }
+    elif client == "codex":
+        snippet["mcp_servers"]["artemis-hands"] = {
+            **with_cwd,
+            "enabled": True,
+            "required": False,
+            "startup_timeout_sec": 120,
+            "enabled_tools": list(HANDS_TOOL_NAMES),
+        }
+    elif client == "vscode":
+        snippet["servers"]["artemis-hands"] = {**with_cwd, "type": "stdio"}
+    elif client in ("claude", "claude_code", "claude_desktop"):
+        snippet["mcpServers"]["artemis-hands"] = {**launch, "type": "stdio"}
+    elif client == "cline":
+        snippet["mcpServers"]["artemis-hands"] = {
+            **launch,
+            "disabled": False,
+            "autoApprove": [],
+            "timeout": 120,
+        }
+    elif client in ("roo", "roo_code"):
+        snippet["mcpServers"]["artemis-hands"] = {
+            **launch,
+            "disabled": False,
+            "alwaysAllow": [],
+            "timeout": 120,
+        }
+    else:
+        snippet["mcpServers"]["artemis-hands"] = launch
+    return snippet
+
+
 def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict:
     """Generates MCP configuration dictionary for the specified client."""
     config_body = {
@@ -75,7 +137,7 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
     config_with_cwd = {**config_body, "cwd": project_root}
 
     if client == "antigravity":
-        return {
+        snippet = {
             "mcpServers": {
                 "artemis": {
                     **config_with_cwd,
@@ -87,7 +149,7 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
             }
         }
     elif client == "jetski":
-        return {
+        snippet = {
             "mcpServers": {
                 "artemis": {
                     **config_with_cwd,
@@ -100,7 +162,7 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
             }
         }
     elif client == "openclaw":
-        return {
+        snippet = {
             "mcp": {
                 "servers": {
                     "artemis": {
@@ -112,7 +174,7 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
             }
         }
     elif client == "codex":
-        return {
+        snippet = {
             "mcp_servers": {
                 "artemis": {
                     **config_with_cwd,
@@ -129,11 +191,11 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
             }
         }
     elif client == "vscode":
-        return {"servers": {"artemis": {**config_with_cwd, "type": "stdio"}}}
+        snippet = {"servers": {"artemis": {**config_with_cwd, "type": "stdio"}}}
     elif client in ("claude", "claude_code", "claude_desktop"):
-        return {"mcpServers": {"artemis": {**config_body, "type": "stdio"}}}
+        snippet = {"mcpServers": {"artemis": {**config_body, "type": "stdio"}}}
     elif client == "cline":
-        return {
+        snippet = {
             "mcpServers": {
                 "artemis": {
                     **config_body,
@@ -144,7 +206,7 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
             }
         }
     elif client in ("roo", "roo_code"):
-        return {
+        snippet = {
             "mcpServers": {
                 "artemis": {
                     **config_body,
@@ -155,7 +217,8 @@ def _get_config_snippet(client: str, python_exe: str, project_root: str) -> dict
             }
         }
     else:  # cursor, windsurf, generic
-        return {"mcpServers": {"artemis": config_body}}
+        snippet = {"mcpServers": {"artemis": config_body}}
+    return _add_hands_server(client, snippet, python_exe, project_root)
 
 
 def _parse_json_lenient(text: str) -> dict | None:
@@ -253,15 +316,23 @@ def _merge_json_file(
         return False
 
 
-def _codex_toml_block(server_config: dict) -> str:
-    """Renders a managed Codex MCP server block using TOML-compatible JSON strings."""
+def _toml_table(server_name: str, suffix: str = "") -> str:
+    """Renders a TOML table path, quoting server names that are not bare keys."""
+    key = server_name if re.fullmatch(r"[A-Za-z0-9_]+", server_name) else json.dumps(server_name)
+    table = f"mcp_servers.{key}"
+    if suffix:
+        table = f"{table}.{suffix}"
+    return table
+
+
+def _codex_server_lines(server_name: str, server_config: dict) -> list[str]:
+    """Renders one Codex MCP server table, without the managed-block markers."""
     command = json.dumps(str(server_config["command"]), ensure_ascii=False)
     args = json.dumps(server_config.get("args", []), ensure_ascii=False)
     cwd = json.dumps(str(server_config["cwd"]), ensure_ascii=False)
     env = server_config.get("env", {})
     lines = [
-        "# BEGIN ARTEMIS MCP CONFIG",
-        "[mcp_servers.artemis]",
+        f"[{_toml_table(server_name)}]",
         f"command = {command}",
         f"args = {args}",
         f"cwd = {cwd}",
@@ -276,19 +347,29 @@ def _codex_toml_block(server_config: dict) -> str:
             f"enabled_tools = {json.dumps(server_config['enabled_tools'], ensure_ascii=False)}"
         )
     if env:
-        lines.extend(["", "[mcp_servers.artemis.env]"])
+        lines.extend(["", f"[{_toml_table(server_name, 'env')}]"])
         for key, value in env.items():
             lines.append(f"{key} = {json.dumps(str(value), ensure_ascii=False)}")
+    return lines
+
+
+def _codex_toml_block(server_config: dict, hands_config: dict | None = None) -> str:
+    """Renders a managed Codex MCP server block using TOML-compatible JSON strings."""
+    lines = ["# BEGIN ARTEMIS MCP CONFIG", *_codex_server_lines("artemis", server_config)]
+    if hands_config:
+        lines.extend(["", *_codex_server_lines("artemis-hands", hands_config)])
     lines.append("# END ARTEMIS MCP CONFIG")
     return "\n".join(lines) + "\n"
 
 
-def _merge_codex_toml(file_path: Path, server_config: dict) -> bool:
+def _merge_codex_toml(
+    file_path: Path, server_config: dict, hands_config: dict | None = None
+) -> bool:
     """Adds or updates Artemis in Codex config.toml while preserving unrelated settings."""
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         existing = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
-        managed_block = _codex_toml_block(server_config)
+        managed_block = _codex_toml_block(server_config, hands_config)
         begin_marker = "# BEGIN ARTEMIS MCP CONFIG"
         end_marker = "# END ARTEMIS MCP CONFIG"
 
@@ -306,8 +387,11 @@ def _merge_codex_toml(file_path: Path, server_config: dict) -> bool:
                 header_match = header_pattern.match(line.rstrip("\r\n"))
                 if header_match:
                     normalized = re.sub(r"[\s\"']", "", header_match.group(1)).lower()
-                    skipping_artemis = normalized == "mcp_servers.artemis" or normalized.startswith(
-                        "mcp_servers.artemis."
+                    skipping_artemis = (
+                        normalized == "mcp_servers.artemis"
+                        or normalized.startswith("mcp_servers.artemis.")
+                        or normalized == "mcp_servers.artemis-hands"
+                        or normalized.startswith("mcp_servers.artemis-hands.")
                     )
                 if not skipping_artemis:
                     kept_lines.append(line)
@@ -366,12 +450,15 @@ def _remove_rules_block(file_path: Path) -> bool:
         return False
 
 
-def _inject_rules_block(file_path: Path, content: str) -> bool:
+def _inject_rules_block(
+    file_path: Path,
+    content: str,
+    begin_marker: str = "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->",
+    end_marker: str = "<!-- END ARTEMIS MOBILE TESTING RULES -->",
+) -> bool:
     """Injects or updates a managed ARTEMIS block in a global rules file without overwriting user content."""
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        begin_marker = "<!-- BEGIN ARTEMIS MOBILE TESTING RULES -->"
-        end_marker = "<!-- END ARTEMIS MOBILE TESTING RULES -->"
         new_block = f"{begin_marker}\n{content.strip()}\n{end_marker}\n"
 
         existing = ""
@@ -417,17 +504,16 @@ def _write_rule_file(file_path: Path, content: str) -> bool:
         return False
 
 
-def _write_cursor_mdc(file_path: Path, content: str) -> bool:
+def _write_cursor_mdc(
+    file_path: Path,
+    content: str,
+    description: str = "Artemis Mobile Testing Mindset & Rules",
+) -> bool:
     """Writes a Cursor .mdc rule file with required YAML frontmatter."""
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        mdc_header = (
-            "---\n"
-            "description: Artemis Mobile Testing Mindset & Rules\n"
-            "globs: **/*\n"
-            "alwaysApply: true\n"
-            "---\n\n"
-        )
+        quoted = description.replace('"', '\\"')
+        mdc_header = f'---\ndescription: "{quoted}"\nglobs: **/*\nalwaysApply: true\n---\n\n'
         new_text = mdc_header + content.strip() + "\n"
         if file_path.exists():
             try:
@@ -557,6 +643,119 @@ def install_rules(client: str, project_root: str) -> list[str]:
     return installed_paths
 
 
+_HANDS_RULES_BEGIN = "<!-- BEGIN ARTEMIS HANDS RULES -->"
+_HANDS_RULES_END = "<!-- END ARTEMIS HANDS RULES -->"
+
+
+def install_hands_rules(client: str, project_root: str) -> list[str]:
+    """Installs the short hands-server rules next to the agent testing rules."""
+    installed_paths: list[str] = []
+    rules_src = Path(project_root) / "mcp_server" / "hands_rules.md"
+    if not rules_src.exists():
+        alt_src = Path(__file__).resolve().parents[4] / "mcp_server" / "hands_rules.md"
+        if alt_src.exists():
+            rules_src = alt_src
+        else:
+            logger.warning(f"Could not locate hands_rules.md at {rules_src}")
+            return []
+    try:
+        raw_rules = rules_src.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning(f"Could not read rules file {rules_src}: {e}")
+        return []
+
+    targets = (
+        [
+            "antigravity",
+            "cursor",
+            "claude",
+            "windsurf",
+            "vscode",
+            "cline",
+            "roo",
+            "openclaw",
+            "codex",
+        ]
+        if client == "all"
+        else [client]
+    )
+    cursor_description = "Artemis Hands: the connected agent decides every device action"
+
+    for target in targets:
+        if target in ("antigravity", "jetski"):
+            path = Path.home() / ".gemini" / "rules" / "artemis-hands.md"
+            if _write_rule_file(path, raw_rules):
+                installed_paths.append(str(path))
+        elif target == "cursor":
+            path = Path.home() / ".cursor" / "rules" / "artemis-hands.mdc"
+            if _write_cursor_mdc(path, raw_rules, description=cursor_description):
+                installed_paths.append(str(path))
+        elif target in ("claude", "claude_code", "claude_desktop"):
+            path = Path.home() / ".claude" / "rules" / "artemis-hands.md"
+            if _write_rule_file(path, raw_rules):
+                installed_paths.append(str(path))
+        elif target == "windsurf":
+            path = Path.home() / ".codeium" / "windsurf" / "rules" / "artemis-hands.md"
+            if _write_rule_file(path, raw_rules):
+                installed_paths.append(str(path))
+        elif target == "vscode":
+            for path in (
+                Path.home() / ".vscode" / "rules" / "artemis-hands.md",
+                _get_vscode_user_dir() / "rules" / "artemis-hands.md",
+            ):
+                if _write_rule_file(path, raw_rules):
+                    installed_paths.append(str(path))
+        elif target == "cline":
+            path = Path.home() / ".cline" / "rules" / "artemis-hands.md"
+            if _write_rule_file(path, raw_rules):
+                installed_paths.append(str(path))
+        elif target in ("roo", "roo_code"):
+            path = Path.home() / ".roo" / "rules" / "artemis-hands.md"
+            if _write_rule_file(path, raw_rules):
+                installed_paths.append(str(path))
+        elif target == "openclaw":
+            path = Path.home() / ".openclaw" / "rules" / "artemis-hands.md"
+            if _write_rule_file(path, raw_rules):
+                installed_paths.append(str(path))
+        elif target == "codex":
+            codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+            override_file = codex_home / "AGENTS.override.md"
+            agents_file = (
+                override_file
+                if override_file.exists() and override_file.read_text(encoding="utf-8").strip()
+                else codex_home / "AGENTS.md"
+            )
+            if _inject_rules_block(agents_file, raw_rules, _HANDS_RULES_BEGIN, _HANDS_RULES_END):
+                installed_paths.append(str(agents_file))
+
+    return installed_paths
+
+
+def _merge_servers(
+    file_path: Path,
+    servers: dict,
+    key_name: str | tuple[str, ...] = "mcpServers",
+    remove_paths: tuple[tuple[str, ...], ...] = (),
+    strict_parse: bool = False,
+) -> bool:
+    """Writes the agent server and the hands server into one MCP config file."""
+    wrote = False
+    for name in ("artemis", "artemis-hands"):
+        cfg = servers.get(name)
+        if not isinstance(cfg, dict):
+            continue
+        if _merge_json_file(
+            file_path,
+            name,
+            cfg,
+            key_name=key_name,
+            remove_paths=remove_paths if name == "artemis" else (),
+            strict_parse=strict_parse,
+        ):
+            wrote = True
+    return wrote
+
+
 def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[str]:
     """Auto-installs/merges ARTEMIS MCP configuration and testing rules into IDE config files across any OS."""
     installed_paths: list[str] = []
@@ -579,23 +778,21 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
     for target in targets:
         snippet = _get_config_snippet(target, python_exe, project_root)
         if target in ("antigravity", "jetski"):
-            current_server_cfg = _get_config_snippet("antigravity", python_exe, project_root)[
+            current_servers = _get_config_snippet("antigravity", python_exe, project_root)[
                 "mcpServers"
-            ]["artemis"]
-            legacy_server_cfg = _get_config_snippet("jetski", python_exe, project_root)[
-                "mcpServers"
-            ]["artemis"]
+            ]
+            legacy_servers = _get_config_snippet("jetski", python_exe, project_root)["mcpServers"]
             jetski_path = Path.home() / ".gemini" / "jetski" / "mcp_config.json"
             antigravity_legacy_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
             config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
-            if _merge_json_file(jetski_path, "artemis", legacy_server_cfg):
+            if _merge_servers(jetski_path, legacy_servers):
                 installed_paths.append(str(jetski_path))
-            if _merge_json_file(antigravity_legacy_path, "artemis", current_server_cfg):
+            if _merge_servers(antigravity_legacy_path, current_servers):
                 installed_paths.append(str(antigravity_legacy_path))
-            if _merge_json_file(config_path, "artemis", current_server_cfg):
+            if _merge_servers(config_path, current_servers):
                 installed_paths.append(str(config_path))
         elif target in ("claude", "claude_code", "claude_desktop"):
-            server_cfg = snippet["mcpServers"]["artemis"]
+            server_cfg = snippet["mcpServers"]
             if sys.platform == "darwin":
                 claude_path = (
                     Path.home()
@@ -609,35 +806,35 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 claude_path = Path(appdata) / "Claude" / "claude_desktop_config.json"
             else:
                 claude_path = Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
-            if _merge_json_file(claude_path, "artemis", server_cfg):
+            if _merge_servers(claude_path, server_cfg):
                 installed_paths.append(str(claude_path))
 
             # Also install to Claude Code CLI global config (~/.claude.json).
             # This file holds Claude Code state well beyond MCP config, so a
             # parse failure must abort the merge rather than rewrite the file.
             claude_code_path = Path.home() / ".claude.json"
-            if _merge_json_file(claude_code_path, "artemis", server_cfg, strict_parse=True):
+            if _merge_servers(claude_code_path, server_cfg, strict_parse=True):
                 installed_paths.append(str(claude_code_path))
         elif target == "cursor":
-            server_cfg = snippet["mcpServers"]["artemis"]
+            server_cfg = snippet["mcpServers"]
             cursor_path = Path.home() / ".cursor" / "mcp.json"
-            if _merge_json_file(cursor_path, "artemis", server_cfg):
+            if _merge_servers(cursor_path, server_cfg):
                 installed_paths.append(str(cursor_path))
         elif target == "windsurf":
-            server_cfg = snippet["mcpServers"]["artemis"]
+            server_cfg = snippet["mcpServers"]
             windsurf_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
-            if _merge_json_file(windsurf_path, "artemis", server_cfg):
+            if _merge_servers(windsurf_path, server_cfg):
                 installed_paths.append(str(windsurf_path))
         elif target == "vscode":
-            server_cfg = snippet["servers"]["artemis"]
+            server_cfg = snippet["servers"]
             vscode_path = _get_vscode_user_dir() / "mcp.json"
             copilot_path = Path.home() / ".copilot" / "mcp-config.json"
-            if _merge_json_file(vscode_path, "artemis", server_cfg, key_name="servers"):
+            if _merge_servers(vscode_path, server_cfg, key_name="servers"):
                 installed_paths.append(str(vscode_path))
-            if _merge_json_file(copilot_path, "artemis", server_cfg, key_name="servers"):
+            if _merge_servers(copilot_path, server_cfg, key_name="servers"):
                 installed_paths.append(str(copilot_path))
         elif target == "cline":
-            server_cfg = snippet["mcpServers"]["artemis"]
+            server_cfg = snippet["mcpServers"]
             cline_paths = (
                 Path.home() / ".cline" / "data" / "settings" / "cline_mcp_settings.json",
                 Path.home() / ".cline" / "mcp.json",
@@ -648,10 +845,10 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 / "cline_mcp_settings.json",
             )
             for cline_path in cline_paths:
-                if _merge_json_file(cline_path, "artemis", server_cfg):
+                if _merge_servers(cline_path, server_cfg):
                     installed_paths.append(str(cline_path))
         elif target in ("roo", "roo_code"):
-            server_cfg = snippet["mcpServers"]["artemis"]
+            server_cfg = snippet["mcpServers"]
             roo_settings_dir = (
                 _get_vscode_user_dir() / "globalStorage" / "rooveterinaryinc.roo-cline" / "settings"
             )
@@ -661,14 +858,13 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 Path(project_root) / ".roo" / "mcp.json",
             )
             for roo_path in roo_paths:
-                if _merge_json_file(roo_path, "artemis", server_cfg):
+                if _merge_servers(roo_path, server_cfg):
                     installed_paths.append(str(roo_path))
         elif target == "openclaw":
-            server_cfg = snippet["mcp"]["servers"]["artemis"]
+            server_cfg = snippet["mcp"]["servers"]
             openclaw_path = Path.home() / ".openclaw" / "openclaw.json"
-            if _merge_json_file(
+            if _merge_servers(
                 openclaw_path,
-                "artemis",
                 server_cfg,
                 key_name=("mcp", "servers"),
                 remove_paths=(("plugins", "artemis_mcp"),),
@@ -676,12 +872,14 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 installed_paths.append(str(openclaw_path))
         elif target == "codex":
             server_cfg = snippet["mcp_servers"]["artemis"]
+            hands_cfg = snippet["mcp_servers"]["artemis-hands"]
             codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
             codex_path = codex_home / "config.toml"
-            if _merge_codex_toml(codex_path, server_cfg):
+            if _merge_codex_toml(codex_path, server_cfg, hands_cfg):
                 installed_paths.append(str(codex_path))
 
     rules_paths = install_rules(client, project_root)
+    installed_paths.extend(install_hands_rules(client, project_root))
     installed_paths.extend(rules_paths)
 
     unique_paths: list[str] = []
@@ -697,7 +895,7 @@ def mcp_command(
         typer.Option(
             "--type",
             "-t",
-            help="Type of MCP server to start: 'agent' (default, universal IDE mobile agent), 'adb' (raw adb), 'xml' (xml fuzzy search).",
+            help="Type of MCP server to start: 'agent' (default, universal IDE mobile agent), 'hands' (device actions only; the client decides), 'adb' (raw adb), 'xml' (xml fuzzy search).",
         ),
     ] = "agent",
     transport: Annotated[
@@ -809,10 +1007,8 @@ def mcp_command(
             json_str = json.dumps(all_configs, indent=2)
             syntax_language = "json"
         elif client == "codex":
-            server_cfg = _get_config_snippet("codex", python_exe, project_root)["mcp_servers"][
-                "artemis"
-            ]
-            json_str = _codex_toml_block(server_cfg)
+            codex_servers = _get_config_snippet("codex", python_exe, project_root)["mcp_servers"]
+            json_str = _codex_toml_block(codex_servers["artemis"], codex_servers["artemis-hands"])
             syntax_language = "toml"
         else:
             snippet = _get_config_snippet(client, python_exe, project_root)
@@ -833,6 +1029,11 @@ def mcp_command(
                 agent_mcp.run(transport="sse", host=host, port=port)
             else:
                 agent_mcp.run(transport="stdio")
+        elif st == "hands":
+            from artemis.mcp.hands_server import main as hands_main
+
+            logger.info(f"Starting Artemis Hands MCP Server over {transport}...")
+            hands_main(transport=transport, host=host, port=port, manage_awake=False)
         elif st == "adb":
             if transport.lower() == "sse":
                 logger.info(f"Starting Artemis ADB MCP Server over {transport}...")
@@ -855,7 +1056,7 @@ def mcp_command(
                 xml_mcp.run(transport="stdio")
         else:
             logger.error(
-                f"Unsupported MCP server type: {server_type}. Use 'agent', 'adb', or 'xml'."
+                f"Unsupported MCP server type: {server_type}. Use 'agent', 'hands', 'adb', or 'xml'."
             )
             raise typer.Exit(1)
     finally:

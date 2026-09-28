@@ -448,6 +448,23 @@ export class AgentService {
     return this.http.get<{ runs: any[] }>(`/api/personal-tasks/${encodeURIComponent(taskId)}/runs`);
   }
 
+  public getAppScript(packageName: string): Observable<any> {
+    return this.http.get(`/api/app-scripts/${encodeURIComponent(packageName)}`);
+  }
+
+  public getAppScriptVersion(packageName: string, versionId: string): Observable<any> {
+    return this.http.get(
+      `/api/app-scripts/${encodeURIComponent(packageName)}/versions/${encodeURIComponent(versionId)}`
+    );
+  }
+
+  public rollbackAppScript(packageName: string, versionId: string): Observable<any> {
+    return this.http.post(
+      `/api/app-scripts/${encodeURIComponent(packageName)}/rollback/${encodeURIComponent(versionId)}`,
+      {}
+    );
+  }
+
   public runTask(
     goal: string,
     profile: string = 'flash',
