@@ -219,11 +219,11 @@
     },
     {
       "title": "去逛一逛芭芭农场",
-      "run": "done",
-      "script": "leave_and_return",
+      "run": "skip",
+      "script": null,
       "script_fails": 0,
       "seconds": 15,
-      "reason": ""
+      "reason": "停留三次仍是去完成，页面要下单，返回会进充值游戏"
     },
     {
       "title": "倒计时60s获得1个骰子",
@@ -275,11 +275,11 @@
     },
     {
       "title": "去逛一逛淘金币",
-      "run": "done",
-      "script": "leave_and_return",
+      "run": "skip",
+      "script": null,
       "script_fails": 0,
       "seconds": 15,
-      "reason": ""
+      "reason": "页面只有打开淘宝或下载淘宝"
     },
     {
       "title": "去玩消消乐领现金",
