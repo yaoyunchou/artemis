@@ -19,9 +19,9 @@
     },
     {
       "title": "去玩闲鱼游戏15s",
-      "run": "skip",
+      "run": "done",
       "script": null,
-      "script_fails": 3,
+      "script_fails": 0,
       "seconds": 0,
       "reason": "打开后是升级页，只能点返回，不能下载"
     },
@@ -45,7 +45,7 @@
       "title": "浏览推荐的国补商品",
       "run": "skip",
       "script": null,
-      "script_fails": 3,
+      "script_fails": 0,
       "seconds": 0,
       "reason": "这一行页面有问题，直接跳过"
     },
@@ -296,6 +296,182 @@
       "script_fails": 0,
       "seconds": 0,
       "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "搜一搜推荐好物",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去浏览福利好物",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "逛逛商城领超值优惠券",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "倒计时60s获得3步",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去百度极速版逛一逛",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "页面只有立即下载"
+    },
+    {
+      "title": "去百度地图逛一逛",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "页面是下载落地页，只有点击领取"
+    },
+    {
+      "title": "逛短视频领现金",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去天猫拿红包",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "薅羊毛赚话费",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去中国移动领话费",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "页面是下载落地，只有立即体验"
+    },
+    {
+      "title": "去菜鸟抽手机",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "页面是菜鸟下载落地，只有去菜鸟0元领"
+    },
+    {
+      "title": "去河马剧场看优质短剧",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "页面由河马剧场App提供，只有立即领取"
+    },
+    {
+      "title": "去苏宁金融赚金币",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "弹出是否允许下载星图金融APP，点了取消"
+    },
+    {
+      "title": "去酷狗免费听歌",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "打开的是酷狗安装包链接，闲鱼拦截了外部下载"
+    },
+    {
+      "title": "点击指定频道好物",
+      "run": "yes",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去浏览全新好物",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "去点点消不停玩1关并订阅",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "去赵云和阿斗玩1关并订阅",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "倒计时1h获得3步",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "倒计时30s获得3步",
+      "run": "done",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去成就中心签到拿周边",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "浏览国补商品下单",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "发布、国补或真实成交，不能用固定点击做完"
     }
   ]
 }
