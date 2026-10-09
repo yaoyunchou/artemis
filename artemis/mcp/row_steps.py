@@ -11,7 +11,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-SHEET_TOKENS = ("任务奖励", "得骰子赚闲鱼币", "累积任务奖励")
+SHEET_TOKENS = (
+    "任务奖励",
+    "得骰子赚闲鱼币",
+    "累积任务奖励",
+    # 2026-09-29：JBCIUOGENV5DAYGU 的弹层标题是「前进获得闲鱼币」，而且它在界面树里
+    # 根本不存在（是图片），只加标题没用。这台的树里稳定出现的是每行都有的「收益+10%」。
+    "前进获得闲鱼币",
+    "收益+10%",
+)
 BUTTONS = ("领取奖励", "去完成", "已完成")
 OPTIONAL_TEXTS = {"取消", "关闭", "关闭广告", "残忍离开", "跳过"}
 CATALOG_NAME = "闲鱼币任务清单.json"
@@ -93,7 +101,12 @@ def compress_steps(events: list[dict[str, Any]], title: str) -> list[dict[str, A
         if event.get("op") == "look":
             signature = tuple(event.get("texts") or [])
             if previous is not None and signature == previous:
-                pending = [item for item in pending if item.get("op") == "wait"]
+                # A tap that changed nothing was a miss. A swipe may still have
+                # advanced a scroll-driven countdown even when the accessibility
+                # tree stayed put, so it is kept.
+                pending = [
+                    item for item in pending if item.get("op") in {"wait", "swipe"}
+                ]
             reduced.extend(pending)
             pending = []
             previous = signature
@@ -122,6 +135,20 @@ def compress_steps(events: list[dict[str, Any]], title: str) -> list[dict[str, A
             if text in OPTIONAL_TEXTS:
                 step["optional"] = True
             steps.append(step)
+        elif op == "swipe":
+            start = event.get("start")
+            end = event.get("end")
+            if not (_is_point(start) and _is_point(end)):
+                continue
+            swipe_step: dict[str, Any] = {
+                "op": "swipe",
+                "start": [int(start[0]), int(start[1])],
+                "end": [int(end[0]), int(end[1])],
+            }
+            millis = int(event.get("ms") or 0)
+            if millis > 0:
+                swipe_step["ms"] = millis
+            steps.append(swipe_step)
         elif op == "wait":
             millis = int(event.get("ms") or 0)
             if millis > 0:
@@ -134,11 +161,25 @@ def compress_steps(events: list[dict[str, Any]], title: str) -> list[dict[str, A
     return steps
 
 
+def _is_point(value: Any) -> bool:
+    """A normalized [x, y] pair, as the swipe tool takes them."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return False
+    return all(
+        isinstance(item, (int, float)) and not isinstance(item, bool)
+        for item in value
+    )
+
+
 def _tap_texts(step: dict[str, Any]) -> list[str]:
     if isinstance(step.get("any"), list):
         return [str(item) for item in step["any"] if str(item).strip()]
     text = str(step.get("text") or "").strip()
     return [text] if text else []
+
+
+def _has_swipe(steps: list[dict[str, Any]]) -> bool:
+    return any(step.get("op") == "swipe" for step in steps)
 
 
 def merge_steps(previous: list[dict[str, Any]], fresh: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -147,6 +188,11 @@ def merge_steps(previous: list[dict[str, Any]], fresh: list[dict[str, Any]]) -> 
         return fresh
     if not fresh:
         return previous
+    # Steps recorded before swipes were captured are systematically missing them.
+    # Merging by index would keep the old `wait` and drop the new `swipe`, which
+    # is exactly the combination that made scroll-driven rows fail forever.
+    if _has_swipe(fresh) and not _has_swipe(previous):
+        return fresh
     merged: list[dict[str, Any]] = []
     for index in range(max(len(previous), len(fresh))):
         if index >= len(previous):
@@ -310,28 +356,54 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def settle(events: list[dict[str, Any]], data: dict[str, Any], previous_unlearned: int | None) -> dict[str, Any]:
-    """Fail when a touched row was not learned, or the unlearned set grew."""
+    """Report what was learned without letting a miss stall the run.
+
+    ``problems`` blocks: a row is still open, or a row claims success with no
+    stored steps. ``debts`` does not block -- a row that was attempted and not
+    learned is offline work, not a reason to stop.
+    """
     touched: dict[str, dict[str, bool]] = {}
     for event in events:
         title = str(event.get("title") or "")
-        if event.get("op") == "begin_row" and title:
-            touched[title] = {"learned": False}
-        elif event.get("op") == "end_row" and title:
-            state = touched.setdefault(title, {"learned": False})
+        op = event.get("op")
+        if not title:
+            continue
+        if op == "begin_row":
+            touched.setdefault(title, {"learned": False, "closed": False, "abandon": False})
+        elif op == "end_row":
+            state = touched.setdefault(
+                title, {"learned": False, "closed": False, "abandon": False}
+            )
+            state["closed"] = True
             if event.get("learned"):
                 state["learned"] = True
+            if event.get("abandon"):
+                state["abandon"] = True
+
     rows = {str(row.get("title")): row for row in data.get("rows") or []}
     problems: list[str] = []
+    debts: list[str] = []
     for title, state in touched.items():
         row = rows.get(title) or {}
         if row.get("run") == "skip":
             continue
         has_steps = bool(row.get("steps"))
-        if state.get("learned") and not has_steps:
+        if not state["closed"]:
+            problems.append(f"{title} 开着没有 end_row")
+        elif state["learned"] and not has_steps:
             problems.append(f"{title} 已做成但没有步骤")
-        elif not state.get("learned") and not has_steps:
-            problems.append(f"{title} 碰过但没学会")
+        elif not state["learned"] and not state["abandon"]:
+            debts.append(title)
+
     unlearned = unlearned_count(data)
+    warnings: list[str] = []
     if previous_unlearned is not None and unlearned > previous_unlearned:
-        problems.append(f"没有步骤的可做行从 {previous_unlearned} 增到 {unlearned}")
-    return {"ok": not problems, "problems": problems, "unlearned": unlearned}
+        warnings.append(f"没有步骤的可做行从 {previous_unlearned} 增到 {unlearned}")
+
+    return {
+        "ok": not problems,
+        "problems": problems,
+        "debts": debts,
+        "warnings": warnings,
+        "unlearned": unlearned,
+    }

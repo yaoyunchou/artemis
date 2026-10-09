@@ -62,38 +62,50 @@ def _get_vscode_user_dir() -> Path:
         return Path.home() / ".config" / "Code" / "User"
 
 
-def _hands_launch(python_exe: str, project_root: str) -> dict:
-    """Launch config for the hands server. A script path avoids importing the agent MCP."""
+HANDS_SERVER = "artemis-hands"
+HANDS_CODE_SERVER = "artemis-hands-code"
+
+
+def _hands_launch(python_exe: str, project_root: str, server_name: str | None = None) -> dict:
+    """Launch config for a hands server. A script path avoids importing the agent MCP.
+
+    ``server_name`` is the client-facing MCP name. The code server passes
+    ``artemis-hands-code`` so its process is distinct from ``artemis-hands``.
+    """
+    env = {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": project_root,
+    }
+    if server_name:
+        env["ARTEMIS_HANDS_NAME"] = server_name
     return {
         "command": python_exe,
         "args": [str(Path(project_root) / "mcp_server" / "hands_entry.py")],
-        "env": {
-            "PYTHONUNBUFFERED": "1",
-            "PYTHONPATH": project_root,
-        },
+        "env": env,
     }
 
 
-def _add_hands_server(client: str, snippet: dict, python_exe: str, project_root: str) -> dict:
-    """Adds the ``artemis-hands`` server beside the existing agent server."""
-    launch = _hands_launch(python_exe, project_root)
+def _put_hands_server(
+    client: str, snippet: dict, server_name: str, launch: dict, project_root: str
+) -> None:
+    """Places one hands-compatible server into the client snippet."""
     with_cwd = {**launch, "cwd": project_root}
     if client == "jetski":
-        snippet["mcpServers"]["artemis-hands"] = {
+        snippet["mcpServers"][server_name] = {
             **with_cwd,
             "disabledTools": [],
             "tools": {name: {"eager": True} for name in HANDS_TOOL_NAMES},
         }
     elif client == "antigravity":
-        snippet["mcpServers"]["artemis-hands"] = {**with_cwd, "disabledTools": []}
+        snippet["mcpServers"][server_name] = {**with_cwd, "disabledTools": []}
     elif client == "openclaw":
-        snippet["mcp"]["servers"]["artemis-hands"] = {
+        snippet["mcp"]["servers"][server_name] = {
             **with_cwd,
             "enabled": True,
             "connectionTimeoutMs": 120000,
         }
     elif client == "codex":
-        snippet["mcp_servers"]["artemis-hands"] = {
+        snippet["mcp_servers"][server_name] = {
             **with_cwd,
             "enabled": True,
             "required": False,
@@ -101,25 +113,39 @@ def _add_hands_server(client: str, snippet: dict, python_exe: str, project_root:
             "enabled_tools": list(HANDS_TOOL_NAMES),
         }
     elif client == "vscode":
-        snippet["servers"]["artemis-hands"] = {**with_cwd, "type": "stdio"}
+        snippet["servers"][server_name] = {**with_cwd, "type": "stdio"}
     elif client in ("claude", "claude_code", "claude_desktop"):
-        snippet["mcpServers"]["artemis-hands"] = {**launch, "type": "stdio"}
+        snippet["mcpServers"][server_name] = {**launch, "type": "stdio"}
     elif client == "cline":
-        snippet["mcpServers"]["artemis-hands"] = {
+        snippet["mcpServers"][server_name] = {
             **launch,
             "disabled": False,
             "autoApprove": [],
             "timeout": 120,
         }
     elif client in ("roo", "roo_code"):
-        snippet["mcpServers"]["artemis-hands"] = {
+        snippet["mcpServers"][server_name] = {
             **launch,
             "disabled": False,
             "alwaysAllow": [],
             "timeout": 120,
         }
     else:
-        snippet["mcpServers"]["artemis-hands"] = launch
+        snippet["mcpServers"][server_name] = launch
+
+
+def _add_hands_server(client: str, snippet: dict, python_exe: str, project_root: str) -> dict:
+    """Adds the phone hands server and the same tools under a code-only name."""
+    _put_hands_server(
+        client, snippet, HANDS_SERVER, _hands_launch(python_exe, project_root), project_root
+    )
+    _put_hands_server(
+        client,
+        snippet,
+        HANDS_CODE_SERVER,
+        _hands_launch(python_exe, project_root, HANDS_CODE_SERVER),
+        project_root,
+    )
     return snippet
 
 
@@ -353,23 +379,32 @@ def _codex_server_lines(server_name: str, server_config: dict) -> list[str]:
     return lines
 
 
-def _codex_toml_block(server_config: dict, hands_config: dict | None = None) -> str:
+def _codex_toml_block(
+    server_config: dict,
+    hands_config: dict | None = None,
+    code_config: dict | None = None,
+) -> str:
     """Renders a managed Codex MCP server block using TOML-compatible JSON strings."""
     lines = ["# BEGIN ARTEMIS MCP CONFIG", *_codex_server_lines("artemis", server_config)]
     if hands_config:
-        lines.extend(["", *_codex_server_lines("artemis-hands", hands_config)])
+        lines.extend(["", *_codex_server_lines(HANDS_SERVER, hands_config)])
+    if code_config:
+        lines.extend(["", *_codex_server_lines(HANDS_CODE_SERVER, code_config)])
     lines.append("# END ARTEMIS MCP CONFIG")
     return "\n".join(lines) + "\n"
 
 
 def _merge_codex_toml(
-    file_path: Path, server_config: dict, hands_config: dict | None = None
+    file_path: Path,
+    server_config: dict,
+    hands_config: dict | None = None,
+    code_config: dict | None = None,
 ) -> bool:
     """Adds or updates Artemis in Codex config.toml while preserving unrelated settings."""
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         existing = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
-        managed_block = _codex_toml_block(server_config, hands_config)
+        managed_block = _codex_toml_block(server_config, hands_config, code_config)
         begin_marker = "# BEGIN ARTEMIS MCP CONFIG"
         end_marker = "# END ARTEMIS MCP CONFIG"
 
@@ -392,6 +427,8 @@ def _merge_codex_toml(
                         or normalized.startswith("mcp_servers.artemis.")
                         or normalized == "mcp_servers.artemis-hands"
                         or normalized.startswith("mcp_servers.artemis-hands.")
+                        or normalized == "mcp_servers.artemis-hands-code"
+                        or normalized.startswith("mcp_servers.artemis-hands-code.")
                     )
                 if not skipping_artemis:
                     kept_lines.append(line)
@@ -740,7 +777,7 @@ def _merge_servers(
 ) -> bool:
     """Writes the agent server and the hands server into one MCP config file."""
     wrote = False
-    for name in ("artemis", "artemis-hands"):
+    for name in ("artemis", HANDS_SERVER, HANDS_CODE_SERVER):
         cfg = servers.get(name)
         if not isinstance(cfg, dict):
             continue
@@ -872,10 +909,11 @@ def install_mcp_config(client: str, python_exe: str, project_root: str) -> list[
                 installed_paths.append(str(openclaw_path))
         elif target == "codex":
             server_cfg = snippet["mcp_servers"]["artemis"]
-            hands_cfg = snippet["mcp_servers"]["artemis-hands"]
+            hands_cfg = snippet["mcp_servers"][HANDS_SERVER]
+            code_cfg = snippet["mcp_servers"][HANDS_CODE_SERVER]
             codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
             codex_path = codex_home / "config.toml"
-            if _merge_codex_toml(codex_path, server_cfg, hands_cfg):
+            if _merge_codex_toml(codex_path, server_cfg, hands_cfg, code_cfg):
                 installed_paths.append(str(codex_path))
 
     rules_paths = install_rules(client, project_root)
@@ -1008,7 +1046,11 @@ def mcp_command(
             syntax_language = "json"
         elif client == "codex":
             codex_servers = _get_config_snippet("codex", python_exe, project_root)["mcp_servers"]
-            json_str = _codex_toml_block(codex_servers["artemis"], codex_servers["artemis-hands"])
+            json_str = _codex_toml_block(
+                codex_servers["artemis"],
+                codex_servers[HANDS_SERVER],
+                codex_servers[HANDS_CODE_SERVER],
+            )
             syntax_language = "toml"
         else:
             snippet = _get_config_snippet(client, python_exe, project_root)

@@ -1,0 +1,61 @@
+{
+  "package": "com.phoenix.read",
+  "rows": [
+    {
+      "title": "开宝箱领金币",
+      "run": "done",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "点主按钮开箱（免费）→ 弹窗显示「恭喜获得开宝箱奖励 N金币」→ 关弹窗（✕ 是图片，盲点归一化 [498,686]）。今日宝箱无限开，开完主按钮变冷却「NN后开启」"
+    },
+    {
+      "title": "饭点领金币补贴",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 30,
+      "reason": "四档：早饭10/午饭20 有「看视频补领」按钮（需看广告）；晚饭10（17:00-20:00）/夜宵10（21:00-24:00）按时段开放。注意一张卡上有两个「看视频补领」"
+    },
+    {
+      "title": "看视频赚金币",
+      "run": "yes",
+      "script": "browse_ad",
+      "script_fails": 0,
+      "seconds": 30,
+      "reason": "点「立即观看」→ 看视频广告约 30s。这张卡是广告位，同一轮里可能出现在多个位置、文案固定但用户数会变"
+    },
+    {
+      "title": "天天预约领金币",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "点「立即预约领取」→ 预约明日一键领金币。当天只算预约，金币明天到账"
+    },
+    {
+      "title": "开启消息通知",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "要开系统推送通知（改系统设置/权限），不是模拟人能稳定做完的事"
+    },
+    {
+      "title": "平分20000亿金币",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "连续签到7天获得平分资格，点「立即打卡参与」。⚠️ 树里标题被拆成「平分」「20000」「亿」「金币」四个节点，对照时按整句认"
+    },
+    {
+      "title": "签到领金币",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": "每日签到，第7日必得5368金币。已完成的那天显示「已领取」，未到的显示「明天」/「第N天」"
+    }
+  ]
+}

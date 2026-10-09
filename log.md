@@ -1,5 +1,112 @@
 # 修改日志
 
+## 2026-10-08
+
+- **增强 MCP 运行日志**（用户要求：不改变逻辑，尽可能详细地输出运行日志）。
+  只加字段、只加记录；**不动任何分支、不动任何返回值、不动学习器**。改 `artemis/mcp/hands_server.py`
+  和 `artemis/mcp/hands_trace.py` 两个文件。
+  - **`source` 字段**：每次 `click` / `long_press` / `focus_and_clear_text` 标 `tree`（按元素编号）
+    或 `coord`（按归一化坐标）；`tree` 时附 `index` / `bounds` / `element_class`。
+    这就直接回答了「这一步靠元素树还是靠截图坐标」——以前只能靠 `text` 是否为空猜，还猜不准。
+  - **`pkg` 前台包名**：`look` 时用 `dumpsys` 读一次并缓存到 `runtime.last_package`，
+    之后每条动作记录自动带上（零额外开销）。**跨 App 跳转 = 相邻两条 `pkg` 不同**。
+    带 3 秒超时、异常全吞、失败沿用旧值；环境变量 `ARTEMIS_HANDS_LOG_PKG=0` 可整体关掉。
+  - **失败也记**：以前 `if result.ok:` 才写日志，失败什么都不留。现在失败落
+    `op: "<工具名>_failed"` + `reason` + `code`，**走 `append` 而非 `note`**（不进当前行事件流，
+    不会被 `compress_steps` 误学成一步可重放脚本）。
+  - **补全「哑工具」**：`long_press` / `input_text` / `manage_app` / `open_link` /
+    `erase_one_char` / `focus_and_clear_text` / `wait_for_text` / `click_sequence` / `use_device`
+    之前**一条日志都不写**，现在全记。
+  - **`look` 加字段**：`elements` / `width` / `height` / `hierarchy_ok` / `settle_ms` / `pkg`；
+    **失败的 look 也记**（`op: "look_failed"`）——以前读不到树时日志是空的，正是最难排查的时候。
+  - **`replay_row` 自己的记录**（最大盲区）：新增 `op: "replay_start"`（步骤数 + 各类型计数 +
+    `script_fails`）、`op: "replay_step"`（第几步 / 期望什么字 / 是否 optional）、
+    `op: "replay_end"`（`ok` / 第几步失败 / `reason` / `script_fails` / `cleared`）。
+    **从此重放次数与成功率可直接从 jsonl 统计**（以前只能靠手写日志的 `how` 反推）。
+  - 重放产生的 `click`/`swipe`/`wait`/`press_key` 带上 `replay: <行名>` + `step: N`，与 AI 操作区分。
+  - `begin_row` 带 `pkg`；`end_row` 带 `button` / `elements` / `pkg`，学成功时还带写入的 `steps`。
+    `HandsTrace.begin/finish/abandon` 加可选 `extra` 参数（默认 `None`，向后兼容）。
+  - **安全性依据**：`compress_steps` 只读 `op=="look"` 的 `texts` 与 `op=="click"` 的 `text`；
+    `settle` / `_open_rows_from_log` 只读 `begin_row` / `end_row`。新 op 名全部落在这之外，被自然忽略。
+    `tests/unit/mcp` 242 passed / 1 skipped（唯一失败是 Windows 专用用例，在 macOS 上改动前就失败）。
+  - ⚠️ **要重载 MCP 才生效**（长驻进程不会自己带上新字段）。
+
+- **补全「日志→脚本」闭环所需的 A 类字段**（依据 `闲鱼币任务_日志补全要求与闭环设计.md` §4 A 清单；
+  用户要求：**只加字段、只加记录、只加带默认值的可选参数，绝不改任何判定/返回值/学习器**）。
+  改 `artemis/mcp/hands_trace.py`、`artemis/mcp/hands_server.py`、
+  `artemis/mcp/hands_session.py`、`cli_study/.../catalog_service.py`，新增
+  `.codebuddy/skills/xianyu-coin-tasks/scripts/note_run.py`。
+  - **A1 `intent`**：`click` / `long_press` / `swipe` 各加可选参数 `intent: str = ""`；
+    成功记录里 `intent` 非空才写该键（空则不写，旧日志形态不变）。把像素动作升级成语义动作，
+    这是能不能从日志里挖出稳定脚本的分水岭。
+  - **A2 真 `run_id` + `run_seq`**：`run_id` 原本在 `HandsTrace.__init__` 按进程生成一次，
+    长驻进程跨天恒定（实测 10-01~10-08 全是 `1d31f717`）。新增 `HandsTrace.begin_run(label)`：
+    换新 `run_id` + `run_seq += 1` + 写一条 `run_start`；**不重置 open row**
+    （`title`/`events`/`before` 不动，行中学不会被 run 边界打乱）。新增 MCP 工具 `begin_run`
+    在 `runtime.trace` 上操作，**不调 `bind`**（那会重置行状态）。`append` / `snapshot` 每条
+    都带 `run_seq`。
+  - **A3 坐标点击补上下文**：`_target_source` 的 `coord` 分支用 `session.elements` 找与目标
+    归一化坐标最近的元素（欧氏距离 ≤ 常量 `NEAR_BOUNDS_RADIUS=80`），补
+    `near_text` / `near_class` / `near_bounds` / `near_distance`。`source` 取值语义不变；
+    `bounds` 缺失/格式异常安全跳过。
+    ⚠️ **修正（QA 复验打回）**：元素 `bounds` 是**设备像素**（`utils/visualization.py:425`），
+    而 tap 是**归一化 0-1000**；初版直接拿像素中心和归一化 tap 比距离 → 生产中几乎永不命中、
+    A3 形同失效。现在 `_nearest_element` 先用新增的 `_to_normalized()`（复用
+    `hands_session.py:92-93` 的 `round(v*1000/max(1,dim))` 写法）把 bounds 中心换算到 0-1000
+    再比欧氏距离；`width`/`height` 缺失/为 0/非数值时安全返回 None（不命名也不崩）。
+    `NEAR_BOUNDS_RADIUS` 仍是 80（它本来就是 0-1000 空间的量，换算只发生在元素一侧）。
+  - **A4 行内/行外标记**：新增 `_in_row_field()`（`{"in_row": bool(runtime.trace.title)}`），
+    `_trace_done` 写成功事件时统一补 `in_row`；**`_note_look`（成功 `look`）与 `look_failed`
+    也一并补**（QA 复验追加）——`look` 是数量最大的一类 op（某天 805 条里 402 条），不覆盖它
+    「多少动作落在行外」的指标就残缺。实测只有 39% 的动作能归到某一行，这个字段让该比例可精确统计。
+  - **A6 回程记录**：`press_key` / `manage_app` / `open_link` 各加可选参数 `purpose: str = ""`；
+    非空时写进自己的记录，`purpose == "return"` 且成功时**额外** `append` 一条
+    `op: "return"`（`via` / `detail` / `pkg`），**不带 `title`**（避免被 `_open_rows_from_log` 误配对）。
+  - **A8 `end_row` 记 done / reward**：`end_row(abandon=False, reward="")`；写入 `finish(extra=)`
+    的详情加 `"done": judged["learned"]`（`judge_row` 返回的判定键）与 `reward`（非空才加）；
+    `abandon=True` 分支也带 `"done": False`。
+  - **结果流补 `detail`**：`CatalogService.note()` 新增参数 `detail: str = ""` 并写入 `record`；
+    `how` / `result` / `archetype` 取值与归一逻辑**一律不动**（`analyze_archetypes.py` 与
+    `cli_study/tests/test_xianyu.py` 依赖它们）。新增 `scripts/note_run.py` 给操作者一个合规写入入口
+    （字段/顺序与 `note()` 一致，枚举只告警不阻断），避免继续手写 JSON 丢字段。
+  - **安全性依据**：`compress_steps` 只读 `op=="look"` 的 `texts` 与 `op=="click"` 的 `text`
+    （见 `artemis/mcp/row_steps.py:101` 与 `:119`）；`settle` / `_open_rows_from_log` 只读
+    `begin_row` / `end_row`。新 op 名（`run_start` / `return`）与新键（`run_seq` / `intent` /
+    `purpose` / `in_row` / `done` / `reward` / `near_*`）全部落在这些消费点之外。
+    `tests/unit/mcp` 无新增失败/错误（基线 224 passed / 1 failed / 1 skipped / 18 errors 保持不变，
+    另加新增用例）。
+  - ⚠️ **同样要重载 MCP 才生效**。
+
+## 2026-10-04
+
+- 给代码对话单独加了 MCP `artemis-hands-code`。工具和 `artemis-hands` 相同，入口仍是 `mcp_server/hands_entry.py`，用 `ARTEMIS_HANDS_NAME` 把进程名分开。老的 `artemis`、`artemis-hands` 配置不动。Cursor 的 `~/.cursor/mcp.json` 已写入这一条，需要重载 MCP 后才会出现。
+
+## 2026-09-30
+
+- **分工定死**（用户明确要求）：**AI 负责检查 + 优化，不执行脚本**；跑任务由用户自己做。见 `.workbuddy-ai/memory/MEMORY.md` 和 `~/.workbuddy-ai/MEMORY.md`。
+- **修掉「截图落在系统临时目录」**（`observation.py`）。查「图片到底存哪」时发现：
+  - `traces/images/` **从 9/28 15:06 之后就没新增过** → hands 这条链路**从来没写进项目**。
+  - 全部落在 `/var/folders/…/T/artemis/screenshots/`：**1949 张 / 500M**，命名 `screenshot_<epoch>.jpg`。
+  - 根因：`observe()` 里 `ctx.data_engine` 为空（hands 链路不建 data_engine）→ 走 temp fallback。
+    临时目录三个问题：**系统会清**、**不按内容去重**、**`mobile_inspect_trace` 会指向空**。
+  - 改法：fallback 改成写 `get_images_dir()`（= `traces/images`，项目内，认 `ARTEMIS_TRACES_DIR`），
+    文件名用 `sha256(bytes)`，跟 data_engine 同一套约定。删掉不再用的 `import time` / `get_temp_dir`。
+  - ⚠️ **去重收益实测只有 1%**（抽样 300 张 → 297 种唯一内容）。屏幕一直在变（状态栏时钟、动画、滚动），
+    所以**别指望 sha256 省磁盘**。这条修的是「落在项目里 + 不会被系统清 + 命名统一」。
+    **真正的问题是没有任何保留策略** —— 500M 只是换个地方继续长。
+- **截图改成只回路径，不回像素**（`hands_server.py`）。图片本来就落盘，但 `look` 以前会把 base64
+  塞进返回值 → 进会话记录 → 之后每轮重发。
+  - `_look_text()` 在元素列表后追加一行 `[screenshot] <绝对路径>`，agent 要看像素自己去开。
+  - `_note_look(session, obs)` 签名加 `obs`，jsonl 的 `look` 事件带 `image` 字段（只记路径）。4 处调用点都改了。
+  - 像素内联**默认关**，只有 `ARTEMIS_HANDS_LOOK_IMAGE=1`（或 true/yes/on）才开。默认下即使显式传
+    `include_image=True` 也只回路径，并多回一条 `[screenshot not inlined] …` 说明，免得误判成看屏失败。
+- 把 `hands_server.py:211` 和 `hands_session.py:117` 的 `look` 默认改成 `include_image=False`，
+  跟 `action_server.py:98` 对齐。控件列表才是真正驱动点击的信号。
+- ⚠️ 只改默认值**不够**：实测 agent 每次都显式传 `include_image: true`（`82a0f71b` 127 次 true = 127 张截图；
+  `5fb784ed` 64 次）。模型是在照抄 schema 里的 `"default": true`。**软约束（写进技能）也无效** ——
+  技能里本来就写着这条，照样 127 次。所以只有**服务端硬约束**靠得住。
+- 纪律：长时间跑任务前先重启 WorkBuddy，别让会话跨天累积；一轮跑完就收尾，不要挂着过夜。
+
 ## 2026-09-29
 
 - 主闲鱼「去逛一逛芭芭农场」停留三次仍是去完成，页面要下单，返回会掉进充值游戏。没有下单，清单标成跳过。

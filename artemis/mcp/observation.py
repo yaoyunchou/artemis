@@ -22,9 +22,9 @@ Validator -- which runs its own UI-change polling -- simply never calls it.
 
 import asyncio
 import base64
-import time
+import hashlib
 
-from artemis.config import get_temp_dir
+from artemis.config import get_images_dir
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.mcp.action_types import ActionCode, ObserveResult
@@ -107,11 +107,19 @@ async def observe(
             logger.error(f"Failed to save image in DataEngine: {e}")
 
     if not screenshot_path:
+        # No DataEngine on this path -- the hands MCP never builds one -- so keep
+        # the pixels in the project anyway, under the same content-addressed name
+        # the DataEngine would have used. A temp file was wrong three ways: the OS
+        # sweeps it, no trace tool can find it, and it is named by clock instead of
+        # by content. Dedup is a side effect, not the point -- screens change
+        # constantly (status-bar clock, animation), so identical bytes are rare.
         try:
-            temp_dir = get_temp_dir("screenshots")
-            temp_file = temp_dir / f"screenshot_{int(time.time())}.jpg"
-            temp_file.write_bytes(screenshot_bytes)
-            screenshot_path = str(temp_file)
+            images_dir = get_images_dir()
+            image_name = hashlib.sha256(screenshot_bytes).hexdigest()
+            file_path = images_dir / f"{image_name}.jpg"
+            if not file_path.exists():
+                file_path.write_bytes(screenshot_bytes)
+            screenshot_path = str(file_path)
         except Exception as e:
             logger.error(f"Failed to save fallback screenshot: {e}")
 

@@ -48,6 +48,7 @@ HANDS_TOOL_NAMES: tuple[str, ...] = (
     "begin_row",
     "end_row",
     "replay_row",
+    "begin_run",
 )
 
 
@@ -114,7 +115,7 @@ class HandsSession:
         self.height = height
 
     async def look(
-        self, *, include_image: bool = True, settle_ms: int = 400
+        self, *, include_image: bool = False, settle_ms: int = 400
     ) -> tuple[ObserveResult, bytes | None]:
         """Captures the screen. A failed hierarchy parse keeps the previous index."""
         obs, image = await observe(

@@ -119,3 +119,8 @@ def test_cursor_config_adds_hands_without_replacing_agent():
     assert snippet["mcpServers"]["artemis"]["args"] == ["-m", "mcp_server"]
     hands_args = snippet["mcpServers"]["artemis-hands"]["args"]
     assert hands_args == ["/project/mcp_server/hands_entry.py"]
+    code = snippet["mcpServers"]["artemis-hands-code"]
+    assert code["args"] == hands_args
+    assert code["command"] == snippet["mcpServers"]["artemis-hands"]["command"]
+    assert code["env"]["ARTEMIS_HANDS_NAME"] == "artemis-hands-code"
+    assert "ARTEMIS_HANDS_NAME" not in snippet["mcpServers"]["artemis-hands"]["env"]

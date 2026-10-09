@@ -19,11 +19,11 @@
     },
     {
       "title": "去玩闲鱼游戏15s",
-      "run": "done",
+      "run": "skip",
       "script": null,
       "script_fails": 0,
       "seconds": 0,
-      "reason": "打开后是升级页，只能点返回，不能下载"
+      "reason": "分身的这一行打开是升级页，只能返回不能下载"
     },
     {
       "title": "去赵云和阿斗玩1关",
@@ -103,7 +103,28 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": ""
+      "reason": "",
+      "steps": [
+        {
+          "op": "tap_text",
+          "text": "领取奖励",
+          "near": "去淘宝签到领红包"
+        }
+      ],
+      "start": {
+        "package": "com.taobao.idlefish",
+        "sheet": true,
+        "title": "去淘宝签到领红包",
+        "button": "去完成",
+        "markers": []
+      },
+      "end": {
+        "package": "com.taobao.idlefish",
+        "sheet": true,
+        "title": "去淘宝签到领红包",
+        "button": "领取奖励",
+        "markers": []
+      }
     },
     {
       "title": "去大众点评赢免单",
@@ -159,7 +180,38 @@
       "script": "browse_ad",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "4/4 已完成。按钮又变回去完成时重新打开。进去后如果是游戏，按页面提示进入并停留后再回列表"
+      "reason": "revise：旧脚本（开始页期望领取奖励／56步 wait+swipe）对不上、广告创意每轮换。通用流程：去完成→停留22s→点跳过→回弹层领。失败一次就交 AI。",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "看15秒视频领奖励"
+        },
+        {
+          "op": "wait",
+          "ms": 22000
+        },
+        {
+          "op": "tap_text",
+          "any": [
+            "跳过",
+            "关闭广告",
+            "残忍离开"
+          ]
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "tap_text",
+          "text": "领取奖励",
+          "near": "看15秒视频领奖励"
+        }
+      ]
     },
     {
       "title": "看视频领奖励",
@@ -167,7 +219,38 @@
       "script": "browse_ad",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "4/4 已完成。按钮又变回去完成时重新打开。进去后如果是游戏，按页面提示进入并停留后再回列表"
+      "reason": "revise：旧脚本（开始页期望领取奖励／56步 wait+swipe）对不上、广告创意每轮换。通用流程：去完成→停留22s→点跳过→回弹层领。失败一次就交 AI。",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "看视频领奖励"
+        },
+        {
+          "op": "wait",
+          "ms": 22000
+        },
+        {
+          "op": "tap_text",
+          "any": [
+            "跳过",
+            "关闭广告",
+            "残忍离开"
+          ]
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "tap_text",
+          "text": "领取奖励",
+          "near": "看视频领奖励"
+        }
+      ]
     },
     {
       "title": "观看视频领取奖励",
@@ -175,7 +258,36 @@
       "script": "browse_ad",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "领取后这一行从列表消失。进去后如果是游戏，按页面提示进入并停留后再回列表"
+      "reason": "revise：创意每轮换。只有两类计数——①视频款：点「去完成」后不碰屏幕等~20s，右上变「奖励已领取」→点「跳过」→回弹层领；②「点击广告，即可获得奖励」款：点底部「点击广告拿奖励」→自动进微信小程序→停15s→回闲鱼重开弹层领。「去浏览15秒免看此广告」类（1688/小米应用商店/京东/支付宝/淘宝闪购）一律不计数（倒计时只跟滑动走、落地页滑不动）。失败一次就交 AI。",
+      "steps": [
+        {
+          "op": "tap_text",
+          "text": "去完成",
+          "near": "观看视频领取奖励"
+        },
+        {
+          "op": "wait",
+          "ms": 22000
+        },
+        {
+          "op": "tap_text",
+          "any": [
+            "跳过",
+            "关闭广告",
+            "残忍离开",
+            "坚持退出"
+          ]
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "tap_text",
+          "text": "领取奖励",
+          "near": "观看视频领取奖励"
+        }
+      ]
     },
     {
       "title": "去头条玩一玩",
@@ -183,15 +295,85 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "领取后这一行从列表消失"
+      "reason": "revise：旧脚本只学了「领奖」一步、缺「去完成+停留+返回」。归类 leave_and_return：点去完成→进今日头条视频流→停留约22s→back 直接退回弹层→按钮变领取奖励→点领取。",
+      "steps": [
+        {
+          "op": "tap_text",
+          "text": "去完成",
+          "near": "去头条玩一玩"
+        },
+        {
+          "op": "wait",
+          "ms": 22000
+        },
+        {
+          "op": "key",
+          "key": "back"
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "tap_text",
+          "text": "领取奖励",
+          "near": "去头条玩一玩"
+        }
+      ]
     },
     {
       "title": "通过首页访问闲鱼币",
       "run": "done",
       "script": null,
       "script_fails": 0,
-      "seconds": 0,
-      "reason": "步骤不固定，先交给 AI"
+      "seconds": 15,
+      "reason": "去完成 → 弹层再点去完成 → 闲鱼首页右上角「签到」圆钮（图片元素，没有文字，artemis 学不到）。end_row 只学到最后一下「领取奖励」，这条 steps 只是占位、回放会失败；真实做法见当日日志",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "通过首页访问闲鱼币"
+        },
+        {
+          "op": "wait",
+          "ms": 5000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            800
+          ],
+          "end": [
+            500,
+            400
+          ],
+          "ms": 650
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            800
+          ],
+          "end": [
+            500,
+            400
+          ],
+          "ms": 650
+        }
+      ]
     },
     {
       "title": "倒计时30s获得1个骰子",
@@ -203,11 +385,12 @@
     },
     {
       "title": "点闪购商品领叠加红包",
-      "run": "done",
-      "script": "leave_and_return",
-      "script_fails": 0,
+      "run": "skip",
+      "script": null,
+      "script_fails": 3,
       "seconds": 15,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "步骤不固定，先交给 AI",
+      "steps": []
     },
     {
       "title": "去蚂蚁庄园逛一逛",
@@ -215,15 +398,27 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": ""
+      "reason": "",
+      "steps": [],
+      "start": {
+        "package": "com.taobao.idlefish",
+        "sheet": true,
+        "title": "去蚂蚁庄园逛一逛",
+        "button": "去完成",
+        "markers": []
+      },
+      "skipped_on": "2026-10-06"
     },
     {
       "title": "去逛一逛芭芭农场",
-      "run": "skip",
+      "run": "done",
       "script": null,
       "script_fails": 0,
       "seconds": 15,
-      "reason": "停留三次仍是去完成，页面要下单，返回会进充值游戏"
+      "reason": "按钮仍是去完成",
+      "steps": [],
+      "fail_on": "2026-10-06",
+      "fail_count": 1
     },
     {
       "title": "倒计时60s获得1个骰子",
@@ -239,7 +434,25 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "步骤不固定，先交给 AI",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "去支付宝农场领水果"
+        },
+        {
+          "op": "tap_text",
+          "text": "关闭做任务集肥料弹窗"
+        },
+        {
+          "op": "wait",
+          "ms": 12000
+        }
+      ]
     },
     {
       "title": "逛逛淘宝闪购天天免单",
@@ -247,7 +460,69 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": ""
+      "reason": "",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "逛逛淘宝闪购天天免单"
+        },
+        {
+          "op": "wait",
+          "ms": 12000
+        },
+        {
+          "op": "wait",
+          "ms": 8000
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            850
+          ],
+          "end": [
+            500,
+            450
+          ],
+          "ms": 600
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            850
+          ],
+          "end": [
+            500,
+            450
+          ],
+          "ms": 600
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            450
+          ],
+          "end": [
+            500,
+            850
+          ],
+          "ms": 600
+        },
+        {
+          "op": "tap_text",
+          "text": "领"
+        },
+        {
+          "op": "wait",
+          "ms": 1500
+        }
+      ]
     },
     {
       "title": "去淘宝闪购果园领水果",
@@ -255,7 +530,37 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "步骤不固定，先交给 AI",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "去淘宝闪购果园领水果"
+        },
+        {
+          "op": "wait",
+          "ms": 6000
+        },
+        {
+          "op": "wait",
+          "ms": 12000
+        },
+        {
+          "op": "wait",
+          "ms": 3000
+        },
+        {
+          "op": "tap_text",
+          "text": "闲鱼币"
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        }
+      ]
     },
     {
       "title": "去美团刷视频赚钱",
@@ -263,7 +568,14 @@
       "script": "browse_ad",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "步骤不固定，先交给 AI",
+      "steps": [
+        {
+          "op": "tap_text",
+          "text": "领取奖励",
+          "near": "去美团刷视频赚钱"
+        }
+      ]
     },
     {
       "title": "去支付宝领积分",
@@ -271,7 +583,26 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "步骤不固定，先交给 AI",
+      "steps": [
+        {
+          "op": "tap_text",
+          "text": "去完成",
+          "near": "去支付宝领积分"
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            850
+          ],
+          "end": [
+            500,
+            450
+          ],
+          "ms": 700
+        }
+      ]
     },
     {
       "title": "去逛一逛淘金币",
@@ -283,11 +614,21 @@
     },
     {
       "title": "去玩消消乐领现金",
-      "run": "skip",
+      "run": "done",
       "script": null,
       "script_fails": 0,
       "seconds": 15,
-      "reason": "标题是玩消消乐，必须闯关，直接跳过"
+      "reason": "",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "领取奖励",
+            "去完成"
+          ],
+          "near": "去玩消消乐领现金"
+        }
+      ]
     },
     {
       "title": "玩夜市消不停游戏1关",
@@ -303,7 +644,66 @@
       "script": null,
       "script_fails": 0,
       "seconds": 0,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "步骤不固定，先交给 AI",
+      "steps": [
+        {
+          "op": "tap_text",
+          "text": "去完成",
+          "near": "搜一搜推荐好物"
+        },
+        {
+          "op": "wait",
+          "ms": 6000
+        },
+        {
+          "op": "wait",
+          "ms": 6000
+        },
+        {
+          "op": "wait",
+          "ms": 6000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 5000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 5000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "tap_text",
+          "text": "返回"
+        }
+      ]
     },
     {
       "title": "去浏览福利好物",
@@ -351,15 +751,91 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": ""
+      "reason": "要进短视频流停留 15s。end_row 只学到最后一下「领取奖励」（前面的导航 artemis 看不到），这条 steps 只是占位、回放会失败；真实做法见当日日志",
+      "steps": [
+        {
+          "op": "tap_text",
+          "text": "去完成",
+          "near": "逛短视频领现金"
+        },
+        {
+          "op": "wait",
+          "ms": 6000
+        },
+        {
+          "op": "wait",
+          "ms": 8000
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            750
+          ],
+          "end": [
+            500,
+            250
+          ],
+          "ms": 600
+        },
+        {
+          "op": "wait",
+          "ms": 8000
+        },
+        {
+          "op": "tap_text",
+          "text": "我的，未选中状态"
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "tap_text",
+          "text": "闲鱼币"
+        },
+        {
+          "op": "wait",
+          "ms": 3000
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            800
+          ],
+          "end": [
+            500,
+            400
+          ],
+          "ms": 650
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            800
+          ],
+          "end": [
+            500,
+            400
+          ],
+          "ms": 650
+        }
+      ]
     },
     {
       "title": "去天猫拿红包",
-      "run": "done",
+      "run": "skip",
       "script": null,
       "script_fails": 0,
       "seconds": 0,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "打开天猫只到福气落地页（还没有任务记录），停留/点互动红包都不计数，判做不到",
+      "steps": []
     },
     {
       "title": "薅羊毛赚话费",
@@ -367,7 +843,69 @@
       "script": null,
       "script_fails": 0,
       "seconds": 0,
-      "reason": "步骤不固定，先交给 AI"
+      "reason": "步骤不固定，先交给 AI",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "薅羊毛赚话费"
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "wait",
+          "ms": 3000
+        },
+        {
+          "op": "wait",
+          "ms": 15000
+        },
+        {
+          "op": "key",
+          "key": "back"
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "tap_text",
+          "text": "领"
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            850
+          ],
+          "end": [
+            500,
+            450
+          ],
+          "ms": 600
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            850
+          ],
+          "end": [
+            500,
+            450
+          ],
+          "ms": 600
+        }
+      ]
     },
     {
       "title": "去中国移动领话费",
@@ -463,7 +1001,73 @@
       "script": "leave_and_return",
       "script_fails": 0,
       "seconds": 15,
-      "reason": ""
+      "reason": "要跳淘宝「淘宝成就」开启20天打卡再签到，跨 App。end_row 只学到最后一下「领取奖励」（前面的导航 artemis 看不到），这条 steps 只是占位、回放会失败；真实做法见当日日志",
+      "steps": [
+        {
+          "op": "tap_text",
+          "any": [
+            "去完成",
+            "领取奖励"
+          ],
+          "near": "去成就中心签到拿周边"
+        },
+        {
+          "op": "wait",
+          "ms": 5000
+        },
+        {
+          "op": "tap_text",
+          "text": "立即开启"
+        },
+        {
+          "op": "wait",
+          "ms": 4000
+        },
+        {
+          "op": "tap_text",
+          "text": "立即开启"
+        },
+        {
+          "op": "wait",
+          "ms": 3500
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "wait",
+          "ms": 3000
+        },
+        {
+          "op": "wait",
+          "ms": 2500
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            800
+          ],
+          "end": [
+            500,
+            400
+          ],
+          "ms": 650
+        },
+        {
+          "op": "swipe",
+          "start": [
+            500,
+            800
+          ],
+          "end": [
+            500,
+            400
+          ],
+          "ms": 650
+        }
+      ]
     },
     {
       "title": "浏览国补商品下单",
@@ -472,6 +1076,206 @@
       "script_fails": 0,
       "seconds": 0,
       "reason": "发布、国补或真实成交，不能用固定点击做完"
+    },
+    {
+      "title": "去夜市消不停玩1关",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
+    },
+    {
+      "title": "添加闲鱼币到桌面",
+      "run": "yes",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去浏览一条微博",
+      "run": "yes",
+      "script": "leave_and_return",
+      "script_fails": 0,
+      "seconds": 15,
+      "reason": ""
+    },
+    {
+      "title": "43秒后获得3步 8步",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "织梦森林",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "完成3次主线",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "三国：冰河时",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "IP兑换",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "可用红包",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "40秒后获得3步 8步",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "19585",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+100完成3次",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+300完成6次",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+50今天",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+80第2天",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+100第3天",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+100第4天",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+100第5天",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "33秒后获得3步 8步",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "27秒后获得3步 8步",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "加曝光 赚闲鱼币",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "20秒后获得3步 8步",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "2秒后获得3步 8步",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "棋盘/商店元素（小游戏名、签到格、挑战进度、倒计时动态标题），不是弹层任务行；被冻结的无障碍树误收进清单"
+    },
+    {
+      "title": "+100领取奖励",
+      "run": "yes",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "步骤不固定，先交给 AI"
+    },
+    {
+      "title": "去猪了个猪玩1关",
+      "run": "skip",
+      "script": null,
+      "script_fails": 0,
+      "seconds": 0,
+      "reason": "任务列表里就是玩游戏，直接跳过"
     }
   ]
 }

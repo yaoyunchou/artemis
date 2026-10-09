@@ -18,6 +18,7 @@ The server lists devices, locks one, and forwards ``look`` plus physical
 actions. It does not plan, check, or call a model.
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -48,7 +49,7 @@ from artemis.runtime.device_lock import DeviceBusyError, DeviceExecutionLock
 
 __all__ = ["HANDS_TOOL_NAMES", "HandsBindError", "HandsRuntime", "mcp", "main"]
 
-mcp = FastMCP("artemis_hands")
+mcp = FastMCP(os.environ.get("ARTEMIS_HANDS_NAME", "artemis_hands"))
 
 
 class HandsBindError(RuntimeError):
@@ -63,6 +64,11 @@ class HandsRuntime:
         self.lock: DeviceExecutionLock | None = None
         self.serial: str | None = None
         self.trace = HandsTrace(Path(__file__).resolve().parents[2])
+        #: Last foreground package seen by ``look``. Stamped onto later action
+        #: records so the log shows which app an action was fired from -- and so
+        #: a cross-app jump shows up as a change between two consecutive stamps.
+        #: Read-only bookkeeping: nothing in the decision path consults it.
+        self.last_package: str | None = None
 
     def list_devices(self) -> list[str]:
         if os.environ.get("ARTEMIS_CLOUD_MODE") == "1":
@@ -117,7 +123,10 @@ class HandsRuntime:
         self.lock = new_lock
         self.session = session
         self.serial = chosen
-        self.trace.device = chosen
+        self.trace.bind(chosen)
+        self.trace.append(
+            {"op": "use_device", "serial": chosen, "available": available}
+        )
         return chosen
 
     def ensure(self) -> HandsSession:
@@ -163,20 +172,303 @@ def _click_text(session: HandsSession, target: Any) -> str:
     return ""
 
 
-def _note_look(session: HandsSession) -> None:
-    runtime.trace.note({"op": "look", "texts": _look_texts(session)})
+# ---------------------------------------------------------------- log detail
+#
+# Everything below only enriches what lands in the daily jsonl. It never changes
+# what a tool does, what it returns, or how a row is judged -- a log that could
+# steer the run would be worse than no log at all.
+
+#: Stamping the foreground package needs one extra ``dumpsys`` per look. On by
+#: default; set to 0 to skip it entirely if adb is being slow or flaky.
+PKG_LOG_ENV = "ARTEMIS_HANDS_LOG_PKG"
+
+
+def _pkg_log_enabled() -> bool:
+    return os.environ.get(PKG_LOG_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+async def _refresh_package(session: HandsSession) -> str | None:
+    """Read the foreground package and cache it for the next action records.
+
+    Best-effort only: a missing driver, a slow shell, or any error keeps the
+    previous stamp and never raises. Bounded so a hung adb cannot stall a run.
+    """
+    if not _pkg_log_enabled():
+        return runtime.last_package
+    try:
+        driver = getattr(session.actuator.controller, "driver", None)
+        getter = getattr(driver, "get_current_package", None)
+        if getter is None:
+            return runtime.last_package
+        package = await asyncio.wait_for(getter(), timeout=3.0)
+    except Exception:
+        return runtime.last_package
+    if package:
+        runtime.last_package = str(package)
+    return runtime.last_package
+
+
+def _pkg_field() -> dict[str, Any]:
+    """The cached foreground package. Cheap: no device round-trip."""
+    return {"pkg": runtime.last_package} if runtime.last_package else {}
+
+
+def _target_source(session: HandsSession, target: Any) -> dict[str, Any]:
+    """How a tap addressed its target: an element index (tree) or a raw point.
+
+    A coordinate tap also gets ``near_*`` fields naming the closest element, so
+    the log can tell a blind guess from a tap on a known element. Purely
+    additive: ``source`` still reads ``"tree"`` or ``"coord"`` exactly as before.
+    """
+    if isinstance(target, str) and target.strip().isdigit():
+        target = int(target.strip())
+    if isinstance(target, int) and not isinstance(target, bool):
+        info: dict[str, Any] = {"source": "tree", "index": target}
+        if 1 <= target <= len(session.elements):
+            element = session.elements[target - 1]
+            if element.get("bounds"):
+                info["bounds"] = element["bounds"]
+            if element.get("class"):
+                info["element_class"] = element["class"]
+        return info
+    info = {"source": "coord"}
+    if (
+        isinstance(target, (list, tuple))
+        and len(target) == 2
+        and all(
+            isinstance(part, (int, float)) and not isinstance(part, bool)
+            for part in target
+        )
+    ):
+        near = _nearest_element(
+            session.elements,
+            float(target[0]),
+            float(target[1]),
+            getattr(session, "width", None),
+            getattr(session, "height", None),
+        )
+        if near is not None:
+            info.update(near)
+    return info
+
+
+#: A coordinate tap whose point lands within this many normalized units (0-1000)
+#: of an element's bounds-center is close enough to name that element in the log.
+#: It is a 0-1000 space quantity, so the element side must be normalized first.
+NEAR_BOUNDS_RADIUS = 80
+
+
+def _bounds_center(element: dict[str, Any]) -> tuple[float, float] | None:
+    """Pixel bounds-center of an element, or ``None``.
+
+    Bounds are device pixels: ``artemis/utils/visualization.py:425`` writes
+    ``[left, top, right, bottom]`` straight from the accessibility dump, no
+    normalizing. So this is a pixel center -- ``_nearest_element`` normalizes it
+    before any distance is compared. Defensive on purpose: ``bounds`` may be
+    missing, the wrong length, or hold non-numeric parts. Any of those is
+    skipped, never raised -- this only feeds a log field.
+    """
+    bounds = element.get("bounds")
+    if not (isinstance(bounds, (list, tuple)) and len(bounds) == 4):
+        return None
+    try:
+        left, top, right, bottom = (float(bounds[index]) for index in range(4))
+    except (TypeError, ValueError):
+        return None
+    return ((left + right) / 2.0, (top + bottom) / 2.0)
+
+
+def _to_normalized(value: float, extent: Any) -> int | None:
+    """Map one pixel value onto the 0-1000 space, or ``None`` if impossible.
+
+    Reuses the exact formula ``resolve_target`` already uses
+    (``artemis/mcp/hands_session.py:92-93``):
+    ``int(max(0, min(1000, round(value * 1000 / max(1, extent)))))`` -- the same
+    convention ``row_steps.find_tap`` also follows. ``None`` is returned when
+    ``extent`` is missing, zero, non-numeric, or a bool, so the caller declines to
+    guess rather than dividing by a bad size.
+    """
+    if isinstance(extent, bool):
+        return None
+    try:
+        size = float(extent)
+    except (TypeError, ValueError):
+        return None
+    if size <= 0:
+        return None
+    return int(max(0, min(1000, round(value * 1000 / max(1.0, size)))))
+
+
+def _nearest_element(
+    elements: list[dict[str, Any]],
+    x: float,
+    y: float,
+    width: Any,
+    height: Any,
+) -> dict[str, Any] | None:
+    """Describe the element nearest a normalized tap, or ``None`` if none is close.
+
+    The tap (``x``/``y``) is normalized 0-1000 -- the ``click`` convention. Element
+    bounds are device pixels, so each bounds-center is normalized first with the
+    same formula ``resolve_target`` uses (``artemis/mcp/hands_session.py:92-93``);
+    only then is a Euclidean distance between them meaningful. A missing, zero, or
+    non-numeric ``width``/``height`` makes that conversion impossible, so the tap
+    is left unnamed rather than guessed. Returns log fields only (``near_*``); it
+    never decides anything.
+    """
+    best: dict[str, Any] | None = None
+    best_distance: float | None = None
+    for element in elements:
+        center = _bounds_center(element)
+        if center is None:
+            continue
+        nx = _to_normalized(center[0], width)
+        ny = _to_normalized(center[1], height)
+        if nx is None or ny is None:
+            return None
+        distance = ((nx - x) ** 2 + (ny - y) ** 2) ** 0.5
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best = element
+    if best is None or best_distance is None or best_distance > NEAR_BOUNDS_RADIUS:
+        return None
+    info: dict[str, Any] = {
+        "near_text": str(best.get("text") or "").strip(),
+        "near_distance": round(best_distance, 1),
+    }
+    if best.get("class"):
+        info["near_class"] = best["class"]
+    if best.get("bounds"):
+        info["near_bounds"] = best["bounds"]
+    return info
+
+
+def _in_row_field() -> dict[str, Any]:
+    """Whether an action lands inside an open row.
+
+    Only ~39% of actions today fall between ``begin_row`` and ``end_row``. This
+    field makes that ratio countable per action instead of inferred. Read-only:
+    it never changes what a tool does.
+    """
+    return {"in_row": bool(runtime.trace.title)}
+
+
+def _trace_done(event: dict[str, Any]) -> None:
+    """Log a successful action. Stays in the row's event stream, as before."""
+    runtime.trace.note({"ok": True, **_in_row_field(), **event})
+
+
+def _trace_missed(action: str, result: ActionResult, event: dict[str, Any]) -> None:
+    """Log a failed action to the daily jsonl only.
+
+    Uses ``append`` rather than ``note`` on purpose: a failure must never enter
+    the open row's event stream, where ``compress_steps`` could mistake it for a
+    step that is safe to replay.
+    """
+    runtime.trace.append(
+        {
+            "op": f"{action}_failed",
+            "ok": False,
+            "reason": result.message,
+            "code": getattr(result.code, "value", str(result.code)),
+            **event,
+        }
+    )
+
+
+def _note_return(via: str, detail: str) -> None:
+    """Record one deliberate return (go home, then reopen the target app).
+
+    The return leg is the highest-frequency failure in the field and no stored
+    ``steps`` can express it, so it is structured here for later mining. It is a
+    meta record only: written with ``append`` (never the row's event stream) and
+    with no ``title``, so ``_open_rows_from_log`` can never pair it with a row.
+    """
+    runtime.trace.append({"op": "return", "via": via, "detail": detail, **_pkg_field()})
+
+
+def _step_expect(step: dict[str, Any]) -> dict[str, Any]:
+    """What a stored replay step was looking for, for the log line."""
+    op = step.get("op")
+    expect: dict[str, Any] = {}
+    if op == "tap_text":
+        if step.get("text"):
+            expect["text"] = step["text"]
+        if step.get("any"):
+            expect["any"] = step["any"]
+        if step.get("near"):
+            expect["near"] = step["near"]
+    elif op == "swipe":
+        expect["start"] = step.get("start")
+        expect["end"] = step.get("end")
+    elif op == "wait":
+        expect["ms"] = step.get("ms")
+    elif op == "key":
+        expect["key"] = step.get("key")
+    return expect
+
+
+def _steps_summary(steps: list[dict[str, Any]]) -> dict[str, int]:
+    """Count stored steps by kind, so the log shows the shape of a script."""
+    summary: dict[str, int] = {}
+    for step in steps:
+        key = str(step.get("op") or "?")
+        summary[key] = summary.get(key, 0) + 1
+    return summary
+
+
+def _note_look(session: HandsSession, obs: Any, settle_ms: int | None = None) -> None:
+    texts = _look_texts(session)
+    event: dict[str, Any] = {
+        "op": "look",
+        "texts": texts,
+        "image": obs.screenshot_path,
+        "elements": len(session.elements),
+        "width": session.width,
+        "height": session.height,
+        "hierarchy_ok": bool(getattr(obs, "hierarchy_ok", True)),
+        **_pkg_field(),
+        **_in_row_field(),
+    }
+    if settle_ms is not None:
+        event["settle_ms"] = settle_ms
+    runtime.trace.note(event)
+    runtime.trace.set_before({"texts": texts, **_pkg_field()})
+
+
+#: The screenshot is persisted to disk on every ``look``; only its path travels
+#: back to the agent. Inlining the pixels is opt-in because one JPEG is
+#: ~0.5-0.7 MB of base64 that the host re-sends on every later turn -- a long
+#: run stacks up hundreds and drives the host process into an abort.
+LOOK_IMAGE_ENV = "ARTEMIS_HANDS_LOOK_IMAGE"
+
+
+def _inline_image_enabled() -> bool:
+    return os.environ.get(LOOK_IMAGE_ENV, "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _look_text(obs) -> str:
     if not obs.ok:
         return obs.message or "Failed to capture the screen."
     text = (obs.elements_text or "").strip()
-    if text:
-        return text
-    return (
-        "No indexed elements on this screen. Decide from the screenshot and pass"
-        " normalized [x, y] coordinates (0-1000)."
-    )
+    if not text:
+        text = (
+            "No indexed elements on this screen. Decide from the screenshot and pass"
+            " normalized [x, y] coordinates (0-1000)."
+        )
+    if obs.screenshot_path:
+        text += f"\n[screenshot] {obs.screenshot_path}"
+    return text
 
 
 @mcp.tool(name="list_devices")
@@ -206,30 +498,67 @@ async def use_device(serial: str | None = None) -> str:
 
 
 @mcp.tool(name="look")
-async def look(include_image: bool = True, settle_ms: int = 400) -> CallToolResult:
+async def look(include_image: bool = False, settle_ms: int = 400) -> CallToolResult:
     """Capture the current screen for the agent to decide the next action.
 
-    Returns the numbered element list as text and, by default, the screenshot
-    as an image. Element indexes start at 1 and stay valid until the next
-    successful look. This server does not interpret the screen.
+    Returns the numbered element list as text, plus the absolute path of the
+    screenshot persisted for this observation -- open that file if you need the
+    pixels. The image is never inlined unless the server opts in with
+    ``ARTEMIS_HANDS_LOOK_IMAGE=1``.
+
+    Rationale: one screenshot is ~0.5-0.7 MB of base64, which lands in the
+    session transcript on every call. A long run accumulates hundreds of them
+    and drives the host agent process into an abort. The element list is the
+    signal that actually drives the clicks. Element indexes start at 1 and stay
+    valid until the next successful look. This server does not interpret the
+    screen.
     """
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("look", str(exc))
+    inline = include_image and _inline_image_enabled()
     try:
-        obs, image = await session.look(include_image=include_image, settle_ms=settle_ms)
+        obs, image = await session.look(include_image=inline, settle_ms=settle_ms)
     except Exception as exc:
         return _failure("look", f"Error during look: {exc}")
     if obs.ok and obs.hierarchy_ok:
-        _note_look(session)
+        await _refresh_package(session)
+        _note_look(session, obs, settle_ms=settle_ms)
+    else:
+        # A look that captured nothing used to leave no trace at all. Record the
+        # miss under its own op so it is visible without perturbing learning:
+        # ``compress_steps`` only ever reads ``op == "look"`` events.
+        runtime.trace.append(
+            {
+                "op": "look_failed",
+                "ok": False,
+                "hierarchy_ok": bool(getattr(obs, "hierarchy_ok", False)),
+                "message": obs.message,
+                "settle_ms": settle_ms,
+                **_pkg_field(),
+                **_in_row_field(),
+            }
+        )
     content: list[Any] = [TextContent(type="text", text=_look_text(obs))]
-    if include_image and image:
+    if inline and image:
         content.append(
             ImageContent(
                 type="image",
                 data=base64.b64encode(image).decode("utf-8"),
                 mimeType="image/jpeg",
+            )
+        )
+    elif include_image:
+        # Say so explicitly: a silent drop would read as a failed capture.
+        content.append(
+            TextContent(
+                type="text",
+                text=(
+                    "[screenshot not inlined] open this file for the pixels:"
+                    f" {obs.screenshot_path}\n"
+                    f"(the server only inlines images when {LOOK_IMAGE_ENV}=1)"
+                ),
             )
         )
     return CallToolResult(
@@ -240,40 +569,101 @@ async def look(include_image: bool = True, settle_ms: int = 400) -> CallToolResu
 
 
 @mcp.tool(name="click")
-async def click(target: int | list[int], times: int = 1, delay_ms: int = 100) -> CallToolResult:
-    """Tap an element index from the latest look, or a normalized [x, y] point."""
+async def click(
+    target: int | list[int],
+    times: int = 1,
+    delay_ms: int = 100,
+    intent: str = "",
+) -> CallToolResult:
+    """Tap an element index from the latest look, or a normalized [x, y] point.
+
+    ``intent`` is the caller's short name for why this tap happens -- 关广告 /
+    找入口 / 停留 / 确认 / 跳过 / 领取 / 回程. It upgrades a pixel tap into a
+    semantic action so runs can be mined for stable steps. Empty is the default
+    and writes no ``intent`` key, keeping older log lines unchanged.
+    """
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("click", str(exc))
     text = _click_text(session, target)
+    source = _target_source(session, target)
     try:
         result = await session.click(target, times=times, delay_ms=delay_ms)
     except Exception as exc:
         return _failure("click", f"Error during click: {exc}")
     if result.ok:
-        runtime.trace.note(
-            {"op": "click", "text": text, "xy": result.normalized_coordinates}
-        )
+        done = {
+            "op": "click",
+            "text": text,
+            "xy": result.normalized_coordinates,
+            "times": times,
+            **source,
+            **_pkg_field(),
+        }
+        if intent:
+            done["intent"] = intent
+        _trace_done(done)
+    else:
+        missed = {"text": text, **source, **_pkg_field()}
+        if intent:
+            missed["intent"] = intent
+        _trace_missed("click", result, missed)
     return _ok_result(result)
 
 
 @mcp.tool(name="long_press")
-async def long_press(target: int | list[int], duration_ms: int = 1000) -> CallToolResult:
-    """Long-press an element index from the latest look, or a normalized [x, y] point."""
+async def long_press(
+    target: int | list[int],
+    duration_ms: int = 1000,
+    intent: str = "",
+) -> CallToolResult:
+    """Long-press an element index from the latest look, or a normalized [x, y] point.
+
+    ``intent`` carries the same meaning as on ``click``. Empty by default.
+    """
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("long_press", str(exc))
+    text = _click_text(session, target)
+    source = _target_source(session, target)
     try:
-        return _ok_result(await session.long_press(target, duration_ms=duration_ms))
+        result = await session.long_press(target, duration_ms=duration_ms)
     except Exception as exc:
         return _failure("long_press", f"Error during long_press: {exc}")
+    if result.ok:
+        done = {
+            "op": "long_press",
+            "text": text,
+            "xy": result.normalized_coordinates,
+            "duration_ms": duration_ms,
+            **source,
+            **_pkg_field(),
+        }
+        if intent:
+            done["intent"] = intent
+        _trace_done(done)
+    else:
+        missed = {"text": text, **source, **_pkg_field()}
+        if intent:
+            missed["intent"] = intent
+        _trace_missed("long_press", result, missed)
+    return _ok_result(result)
 
 
 @mcp.tool(name="swipe")
-async def swipe(start: list[int], end: list[int], duration_ms: int = 800) -> CallToolResult:
-    """Swipe between two normalized [x, y] points (0-1000)."""
+async def swipe(
+    start: list[int],
+    end: list[int],
+    duration_ms: int = 800,
+    intent: str = "",
+) -> CallToolResult:
+    """Swipe between two normalized [x, y] points (0-1000).
+
+    ``intent`` records why the swipe happens (滚动 / 翻页 / 回程), same as on
+    ``click``. Empty by default; no key is written when empty.
+    """
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
@@ -283,7 +673,15 @@ async def swipe(start: list[int], end: list[int], duration_ms: int = 800) -> Cal
     except Exception as exc:
         return _failure("swipe", f"Error during swipe: {exc}")
     if result.ok:
-        runtime.trace.note({"op": "swipe", "start": start, "end": end})
+        done = {"op": "swipe", "start": start, "end": end, "ms": duration_ms, **_pkg_field()}
+        if intent:
+            done["intent"] = intent
+        _trace_done(done)
+    else:
+        missed = {"start": start, "end": end, "ms": duration_ms, **_pkg_field()}
+        if intent:
+            missed["intent"] = intent
+        _trace_missed("swipe", result, missed)
     return _ok_result(result)
 
 
@@ -298,15 +696,36 @@ async def input_text(
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("input_text", str(exc))
+    target_info = _target_source(session, target) if target is not None else {}
     try:
-        return _ok_result(await session.input_text(text, target=target, clear_exist=clear_exist))
+        result = await session.input_text(text, target=target, clear_exist=clear_exist)
     except Exception as exc:
         return _failure("input_text", f"Error during input_text: {exc}")
+    if result.ok:
+        _trace_done(
+            {
+                "op": "input_text",
+                "text": text,
+                "chars": len(text),
+                "clear_exist": clear_exist,
+                **target_info,
+                **_pkg_field(),
+            }
+        )
+    else:
+        _trace_missed("input_text", result, {"chars": len(text), **target_info, **_pkg_field()})
+    return _ok_result(result)
 
 
 @mcp.tool(name="press_key")
-async def press_key(key: str) -> CallToolResult:
-    """Press a key such as back, home, enter, or an Android KEYCODE_* name."""
+async def press_key(key: str, purpose: str = "") -> CallToolResult:
+    """Press a key such as back, home, enter, or an Android KEYCODE_* name.
+
+    ``purpose`` records why the key is pressed. When it is ``"return"`` the run
+    is going home to reopen the target app -- the most common failure mode in the
+    field, and one the stored ``steps`` cannot express -- so a dedicated
+    ``op: "return"`` record is written too. Empty by default.
+    """
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
@@ -316,34 +735,78 @@ async def press_key(key: str) -> CallToolResult:
     except Exception as exc:
         return _failure("press_key", f"Error during press_key: {exc}")
     if result.ok:
-        runtime.trace.note({"op": "press_key", "key": key})
+        done = {"op": "press_key", "key": key, **_pkg_field()}
+        if purpose:
+            done["purpose"] = purpose
+        _trace_done(done)
+        if purpose == "return":
+            _note_return("press_key", key)
+    else:
+        missed = {"key": key, **_pkg_field()}
+        if purpose:
+            missed["purpose"] = purpose
+        _trace_missed("press_key", result, missed)
     return _ok_result(result)
 
 
 @mcp.tool(name="manage_app")
-async def manage_app(action: str, app_name: str) -> CallToolResult:
-    """Launch or stop an app by name or package. action is 'launch' or 'stop'."""
+async def manage_app(action: str, app_name: str, purpose: str = "") -> CallToolResult:
+    """Launch or stop an app by name or package. action is 'launch' or 'stop'.
+
+    ``purpose="return"`` also writes the dedicated return record (see
+    ``press_key``). Empty by default.
+    """
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("manage_app", str(exc))
     try:
-        return _ok_result(await session.manage_app(action, app_name))
+        result = await session.manage_app(action, app_name)
     except Exception as exc:
         return _failure("manage_app", f"Error during manage_app: {exc}")
+    if result.ok:
+        done = {"op": "manage_app", "action": action, "app_name": app_name, **_pkg_field()}
+        if purpose:
+            done["purpose"] = purpose
+        _trace_done(done)
+        if purpose == "return":
+            _note_return("manage_app", app_name)
+    else:
+        missed = {"action": action, "app_name": app_name, **_pkg_field()}
+        if purpose:
+            missed["purpose"] = purpose
+        _trace_missed("manage_app", result, missed)
+    return _ok_result(result)
 
 
 @mcp.tool(name="open_link")
-async def open_link(url: str) -> CallToolResult:
-    """Open a URL or deep link on the device."""
+async def open_link(url: str, purpose: str = "") -> CallToolResult:
+    """Open a URL or deep link on the device.
+
+    ``purpose="return"`` also writes the dedicated return record (see
+    ``press_key``). Empty by default.
+    """
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("open_link", str(exc))
     try:
-        return _ok_result(await session.open_link(url))
+        result = await session.open_link(url)
     except Exception as exc:
         return _failure("open_link", f"Error during open_link: {exc}")
+    if result.ok:
+        done = {"op": "open_link", "url": url, **_pkg_field()}
+        if purpose:
+            done["purpose"] = purpose
+        _trace_done(done)
+        if purpose == "return":
+            _note_return("open_link", url)
+    else:
+        missed = {"url": url, **_pkg_field()}
+        if purpose:
+            missed["purpose"] = purpose
+        _trace_missed("open_link", result, missed)
+    return _ok_result(result)
 
 
 @mcp.tool(name="erase_one_char")
@@ -354,9 +817,14 @@ async def erase_one_char() -> CallToolResult:
     except HandsBindError as exc:
         return _failure("erase_one_char", str(exc))
     try:
-        return _ok_result(await session.erase_one_char())
+        result = await session.erase_one_char()
     except Exception as exc:
         return _failure("erase_one_char", f"Error during erase_one_char: {exc}")
+    if result.ok:
+        _trace_done({"op": "erase_one_char", **_pkg_field()})
+    else:
+        _trace_missed("erase_one_char", result, _pkg_field())
+    return _ok_result(result)
 
 
 @mcp.tool(name="focus_and_clear_text")
@@ -366,10 +834,16 @@ async def focus_and_clear_text(target: int | list[int]) -> CallToolResult:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _failure("focus_and_clear_text", str(exc))
+    source = _target_source(session, target)
     try:
-        return _ok_result(await session.focus_and_clear_text(target))
+        result = await session.focus_and_clear_text(target)
     except Exception as exc:
         return _failure("focus_and_clear_text", f"Error during focus_and_clear_text: {exc}")
+    if result.ok:
+        _trace_done({"op": "focus_and_clear_text", **source, **_pkg_field()})
+    else:
+        _trace_missed("focus_and_clear_text", result, {**source, **_pkg_field()})
+    return _ok_result(result)
 
 
 @mcp.tool(name="wait_for_delay")
@@ -384,7 +858,9 @@ async def wait_for_delay(time_in_ms: int) -> CallToolResult:
     except Exception as exc:
         return _failure("wait_for_delay", f"Error during wait_for_delay: {exc}")
     if result.ok:
-        runtime.trace.note({"op": "wait", "ms": time_in_ms})
+        _trace_done({"op": "wait", "ms": time_in_ms, **_pkg_field()})
+    else:
+        _trace_missed("wait_for_delay", result, {"ms": time_in_ms, **_pkg_field()})
     return _ok_result(result)
 
 
@@ -398,11 +874,15 @@ async def wait_for_text(
     except HandsBindError as exc:
         return _failure("wait_for_text", str(exc))
     try:
-        return _ok_result(
-            await session.wait_for_text(text, wait_state=wait_state, timeout_ms=timeout_ms)
-        )
+        result = await session.wait_for_text(text, wait_state=wait_state, timeout_ms=timeout_ms)
     except Exception as exc:
         return _failure("wait_for_text", f"Error during wait_for_text: {exc}")
+    detail = {"text": text, "wait_state": wait_state, "timeout_ms": timeout_ms, **_pkg_field()}
+    if result.ok:
+        _trace_done({"op": "wait_for_text", **detail})
+    else:
+        _trace_missed("wait_for_text", result, detail)
+    return _ok_result(result)
 
 
 @mcp.tool(name="click_sequence")
@@ -416,13 +896,37 @@ async def click_sequence(sequence: list[list[int]], delay_ms: int = 50) -> CallT
     except HandsBindError as exc:
         return _failure("click_sequence", str(exc))
     try:
-        return _ok_result(await session.click_sequence(sequence, delay_ms=delay_ms))
+        result = await session.click_sequence(sequence, delay_ms=delay_ms)
     except Exception as exc:
         return _failure("click_sequence", f"Error during click_sequence: {exc}")
+    detail = {"points": sequence, "delay_ms": delay_ms, "count": len(sequence), **_pkg_field()}
+    if result.ok:
+        _trace_done({"op": "click_sequence", **detail})
+    else:
+        _trace_missed("click_sequence", result, detail)
+    return _ok_result(result)
 
 
 def _repo_catalog() -> Path:
     return catalog_path(Path(__file__).resolve().parents[2])
+
+
+@mcp.tool(name="begin_run")
+async def begin_run(label: str = "") -> str:
+    """Start a new run: rotate run_id and bump run_seq so every task run is separable."""
+    try:
+        runtime.ensure()
+    except HandsBindError as exc:
+        return _json({"ok": False, "reason": str(exc)})
+    tokens = runtime.trace.begin_run(label)
+    return _json(
+        {
+            "ok": True,
+            "run_id": tokens["run_id"],
+            "run_seq": tokens["run_seq"],
+            "label": label,
+        }
+    )
 
 
 @mcp.tool(name="begin_row")
@@ -432,24 +936,30 @@ async def begin_row(title: str) -> str:
     if not name:
         return _json({"ok": False, "reason": "行名是空的"})
     try:
-        runtime.trace.begin(name)
+        runtime.trace.begin(name, extra=_pkg_field())
     except RowBusy as exc:
         return _json({"ok": False, "reason": str(exc), "open_title": exc.title})
     return _json({"ok": True, "title": name})
 
 
 @mcp.tool(name="end_row")
-async def end_row(abandon: bool = False) -> str:
+async def end_row(abandon: bool = False, reward: str = "") -> str:
     """Look once and, if the sheet shows this row is done, store its steps.
 
     ``abandon`` closes the row without storing steps. Use it only after the
     catalog row has been marked skip. A row that is not done stays open.
+
+    ``reward`` is an optional free-text note of what this row actually paid out
+    (e.g. ``+100``); it is logged on the ``end_row`` line for later tallying.
     """
     if not runtime.trace.title:
         return _json({"ok": False, "learned": False, "reason": "没有进行中的行"})
     title = runtime.trace.title
     if abandon:
-        runtime.trace.abandon()
+        extra: dict[str, Any] = {"done": False, **_pkg_field()}
+        if reward:
+            extra["reward"] = reward
+        runtime.trace.abandon(extra=extra)
         return _json({"ok": True, "learned": False, "title": title, "abandon": True})
     try:
         session = runtime.ensure()
@@ -461,18 +971,56 @@ async def end_row(abandon: bool = False) -> str:
         return _json({"ok": False, "learned": False, "reason": f"看屏失败：{exc}"})
     if not (obs.ok and obs.hierarchy_ok):
         return _json({"ok": False, "learned": False, "reason": "看屏失败"})
-    _note_look(session)
+    await _refresh_package(session)
+    _note_look(session, obs, settle_ms=300)
     judged = judge_row(session.elements, title)
+    # Diagnostics for the end_row line: which button decided the outcome, how
+    # much of the screen the tree exposed, and whether the row counts as done.
+    # ``done`` is ``judged["learned"]`` -- the exact signal that gates learning,
+    # so a log reader gets the same verdict the row was closed on. These fields
+    # are never consulted by the judgement itself.
+    detail: dict[str, Any] = {
+        "button": judged["button"],
+        "elements": len(session.elements),
+        "done": judged["learned"],
+        **_pkg_field(),
+    }
+    if reward:
+        detail["reward"] = reward
     if not judged["learned"]:
-        return _json({"ok": True, "learned": False, "title": title, "reason": judged["reason"]})
+        # Close the row anyway: a miss becomes an offline debt, not a lock on
+        # every later row. Leaving it open is what stalled whole runs.
+        runtime.trace.finish(learned=False, reason=judged["reason"], extra=detail)
+        return _json(
+            {
+                "ok": True,
+                "learned": False,
+                "title": title,
+                "reason": judged["reason"],
+                "closed": True,
+            }
+        )
     steps = compress_steps(runtime.trace.events, title)
     if not steps:
-        return _json({"ok": True, "learned": False, "title": title, "reason": "没有可按文字重放的点击"})
+        runtime.trace.finish(learned=False, reason="没有可按文字重放的点击", extra=detail)
+        return _json(
+            {
+                "ok": True,
+                "learned": False,
+                "title": title,
+                "reason": "没有可按文字重放的点击",
+                "closed": True,
+            }
+        )
     try:
         row = store_steps(_repo_catalog(), title, steps)
     except ValueError as exc:
+        runtime.trace.finish(learned=False, reason=str(exc), extra=detail)
         return _json({"ok": False, "learned": False, "title": title, "reason": str(exc)})
-    runtime.trace.finish(learned=True)
+    runtime.trace.finish(
+        learned=True,
+        extra={**detail, "steps": row.get("steps") or []},
+    )
     return _json(
         {
             "ok": True,
@@ -508,30 +1056,71 @@ async def replay_row(title: str) -> str:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _json({"ok": False, "reason": str(exc)})
+
+    # ``replay_row`` used to leave no record of its own: its internal look/click
+    # lines were indistinguishable from an agent's, so the replay count and hit
+    # rate could not be read back from the jsonl. The three ops below fix that
+    # without touching a single decision or return value.
+    def _end(ok: bool, payload: dict[str, Any]) -> str:
+        runtime.trace.append(
+            {"op": "replay_end", "title": name, "ok": ok, **_pkg_field(), **payload}
+        )
+        return _json(payload)
+
+    await _refresh_package(session)
+    runtime.trace.append(
+        {
+            "op": "replay_start",
+            "title": name,
+            "steps": len(steps),
+            "summary": _steps_summary(steps),
+            "script_fails": int((row or {}).get("script_fails") or 0),
+            **_pkg_field(),
+        }
+    )
     deadline = time.monotonic() + 60
     for index, step in enumerate(steps, start=1):
         if time.monotonic() > deadline:
             failure = note_replay_failure(catalog, name)
-            return _json(
-                {"ok": False, "title": name, "step": index, "reason": "超过一分钟", **failure}
+            return _end(
+                False,
+                {"ok": False, "title": name, "step": index, "reason": "超过一分钟", **failure},
             )
         try:
             obs, _image = await session.look(include_image=False, settle_ms=200)
         except Exception as exc:
             failure = note_replay_failure(catalog, name)
-            return _json({"ok": False, "title": name, "step": index, "reason": str(exc), **failure})
+            return _end(
+                False,
+                {"ok": False, "title": name, "step": index, "reason": str(exc), **failure},
+            )
         if not (obs.ok and obs.hierarchy_ok):
             failure = note_replay_failure(catalog, name)
-            return _json({"ok": False, "title": name, "step": index, "reason": "看屏失败", **failure})
-        _note_look(session)
+            return _end(
+                False,
+                {"ok": False, "title": name, "step": index, "reason": "看屏失败", **failure},
+            )
+        _note_look(session, obs)
         op = step.get("op")
+        runtime.trace.append(
+            {
+                "op": "replay_step",
+                "title": name,
+                "step": index,
+                "step_op": op,
+                "expect": _step_expect(step),
+                "optional": bool(step.get("optional")),
+                **_pkg_field(),
+            }
+        )
         if op == "tap_text":
             point = find_tap(session.elements, step, session.width, session.height)
             if point is None:
                 if step.get("optional"):
                     continue
                 failure = note_replay_failure(catalog, name)
-                return _json(
+                return _end(
+                    False,
                     {
                         "ok": False,
                         "title": name,
@@ -539,46 +1128,110 @@ async def replay_row(title: str) -> str:
                         "reason": "屏幕上没有这一步的字",
                         "texts": _look_texts(session),
                         **failure,
-                    }
+                    },
                 )
             result = await session.click(point)
             if result.ok:
                 runtime.trace.note(
-                    {"op": "click", "text": step.get("text") or "", "xy": result.normalized_coordinates}
+                    {
+                        "op": "click",
+                        "text": step.get("text") or "",
+                        "xy": result.normalized_coordinates,
+                        "replay": name,
+                        "step": index,
+                        **_pkg_field(),
+                    }
                 )
             elif not step.get("optional"):
                 failure = note_replay_failure(catalog, name)
-                return _json(
-                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure}
+                return _end(
+                    False,
+                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure},
+                )
+        elif op == "swipe":
+            start = step.get("start")
+            end = step.get("end")
+            if not (
+                isinstance(start, list)
+                and len(start) == 2
+                and isinstance(end, list)
+                and len(end) == 2
+            ):
+                if step.get("optional"):
+                    continue
+                failure = note_replay_failure(catalog, name)
+                return _end(
+                    False,
+                    {
+                        "ok": False,
+                        "title": name,
+                        "step": index,
+                        "reason": "这一步的 swipe 坐标不完整",
+                        **failure,
+                    },
+                )
+            millis = int(step.get("ms") or 800)
+            point_from = [int(start[0]), int(start[1])]
+            point_to = [int(end[0]), int(end[1])]
+            result = await session.swipe(point_from, point_to, duration_ms=millis)
+            if result.ok:
+                runtime.trace.note(
+                    {
+                        "op": "swipe",
+                        "start": point_from,
+                        "end": point_to,
+                        "ms": millis,
+                        "replay": name,
+                        "step": index,
+                        **_pkg_field(),
+                    }
+                )
+            elif not step.get("optional"):
+                failure = note_replay_failure(catalog, name)
+                return _end(
+                    False,
+                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure},
                 )
         elif op == "wait":
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             millis = min(int(step.get("ms") or 0), max(0, remaining_ms))
             if millis:
                 await session.wait_for_delay(millis)
-                runtime.trace.note({"op": "wait", "ms": millis})
+                runtime.trace.note(
+                    {"op": "wait", "ms": millis, "replay": name, "step": index, **_pkg_field()}
+                )
         elif op == "key":
             result = await session.press_key(str(step.get("key") or "back"))
             if result.ok:
-                runtime.trace.note({"op": "press_key", "key": step.get("key") or "back"})
+                runtime.trace.note(
+                    {
+                        "op": "press_key",
+                        "key": step.get("key") or "back",
+                        "replay": name,
+                        "step": index,
+                        **_pkg_field(),
+                    }
+                )
             else:
                 failure = note_replay_failure(catalog, name)
-                return _json(
-                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure}
+                return _end(
+                    False,
+                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure},
                 )
     try:
         obs, _image = await session.look(include_image=False, settle_ms=300)
     except Exception as exc:
         failure = note_replay_failure(catalog, name)
-        return _json({"ok": False, "title": name, "reason": str(exc), **failure})
+        return _end(False, {"ok": False, "title": name, "reason": str(exc), **failure})
     if not (obs.ok and obs.hierarchy_ok):
         failure = note_replay_failure(catalog, name)
-        return _json({"ok": False, "title": name, "reason": "看屏失败", **failure})
-    _note_look(session)
+        return _end(False, {"ok": False, "title": name, "reason": "看屏失败", **failure})
+    _note_look(session, obs, settle_ms=300)
     judged = judge_row(session.elements, name)
     if not judged["learned"]:
         failure = note_replay_failure(catalog, name)
-        return _json(
+        return _end(
+            False,
             {
                 "ok": False,
                 "title": name,
@@ -586,10 +1239,13 @@ async def replay_row(title: str) -> str:
                 "button": judged["button"],
                 "texts": _look_texts(session),
                 **failure,
-            }
+            },
         )
     note_replay_success(catalog, name)
-    return _json({"ok": True, "title": name, "button": judged["button"], "reason": judged["reason"]})
+    return _end(
+        True,
+        {"ok": True, "title": name, "button": judged["button"], "reason": judged["reason"]},
+    )
 
 
 def _registered_tool_names() -> set[str]:
