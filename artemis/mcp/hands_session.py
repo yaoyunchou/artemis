@@ -46,6 +46,7 @@ HANDS_TOOL_NAMES: tuple[str, ...] = (
     "wait_for_text",
     "click_sequence",
     "begin_row",
+    "close_row",
     "end_row",
     "replay_row",
     "begin_run",

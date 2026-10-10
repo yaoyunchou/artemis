@@ -235,7 +235,7 @@ def test_in_row_field_tracks_the_open_row(workdir: Path, monkeypatch: pytest.Mon
 
     assert _in_row_field() == {"in_row": False}
     trace.begin("甲")
-    assert _in_row_field() == {"in_row": True}
+    assert _in_row_field() == {"in_row": True, "title": "甲"}
     trace.finish(learned=False, reason="没做成")
     assert _in_row_field() == {"in_row": False}
 
@@ -271,6 +271,8 @@ async def test_look_records_carry_in_row(
     await hands_server.look()
     looks = [record for record in _records(trace) if record.get("op") == "look"]
     assert looks[-1]["in_row"] is True
+    assert looks[-1]["title"] == "甲"
+    assert looks[-1]["run_id"] == trace.run_id
 
 
 # -------------------------------------------------------- intent / return (tools)
@@ -311,7 +313,10 @@ async def test_press_key_return_writes_a_titleless_return_record(
 
     presses = [record for record in records if record.get("op") == "press_key"]
     assert presses[0]["purpose"] == "return"
+    assert presses[0]["role"] == "cold_start"
     assert "purpose" not in presses[-1]
+    assert "role" not in presses[-1]
+    assert returns[0]["role"] == "nav"
 
 
 # ----------------------------------------------------- learning is untouched
@@ -341,3 +346,285 @@ def test_new_ops_do_not_change_compress_steps() -> None:
     # And the shared result is still the real thing, not an empty fallback.
     assert result[0] == {"op": "tap_text", "text": "去完成", "near": title}
     assert any(step.get("op") == "swipe" for step in result)
+
+
+# ------------------------------------------------------- learnable row span
+
+
+def test_open_row_actions_inherit_title_and_boundary_ops_do_not(workdir: Path) -> None:
+    trace = HandsTrace(workdir, device="testdev")
+    trace.begin("去蚂蚁庄园逛一逛", extra={"how": "script"})
+    trace.note({"op": "click", "text": "去完成", "ok": True})
+    trace.append({"op": "click_failed", "ok": False, "reason": "miss"})
+    trace.append({"op": "replay_start", "title": "另一行"})
+    trace.begin_run("一轮")
+    events = trace.finish(learned=False, reason="按钮仍是去完成")
+
+    assert events[0]["title"] == "去蚂蚁庄园逛一逛"
+    assert events[0]["in_row"] is True
+    assert trace.title is None
+    assert "去蚂蚁庄园逛一逛" in trace.pending_learn
+
+    records = _records(trace)
+    begin = records[0]
+    assert begin["op"] == "begin_row"
+    assert begin["how"] == "script"
+    assert begin["run_id"]
+    click = next(record for record in records if record.get("op") == "click")
+    assert click["title"] == "去蚂蚁庄园逛一逛"
+    assert click["in_row"] is True
+    assert click["run_seq"] == 0
+    failed = next(record for record in records if record.get("op") == "click_failed")
+    assert failed["title"] == "去蚂蚁庄园逛一逛"
+    assert failed["in_row"] is True
+    replay = next(record for record in records if record.get("op") == "replay_start")
+    assert replay["title"] == "另一行"
+    assert "in_row" not in replay
+    started = next(record for record in records if record.get("op") == "run_start")
+    assert "title" not in started
+    end = records[-1]
+    assert end["op"] == "end_row"
+    assert end["outcome"] == "fail"
+    assert end["learned"] is False
+    assert end["run_id"]
+    assert end["run_seq"] == 1
+    assert end["run_id"] != begin["run_id"]
+
+
+def test_close_span_records_outcome_and_a_miss_still_closes(workdir: Path) -> None:
+    trace = HandsTrace(workdir, device="testdev")
+    trace.begin("甲")
+    trace.close_span(learned=True, outcome="done", reason="")
+    assert trace.title is None
+    assert trace.completed == ["甲"]
+    trace.begin("乙")
+    trace.abandon(outcome="skip", reason="不做")
+    assert trace.title is None
+    assert "乙" not in trace.pending_learn
+    outcomes = {
+        record["title"]: record["outcome"]
+        for record in _records(trace)
+        if record.get("op") == "end_row"
+    }
+    assert outcomes == {"甲": "done", "乙": "skip"}
+
+
+@pytest.mark.asyncio
+async def test_click_role_infers_nav_and_explicit_role_wins(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trace = HandsTrace(workdir, device="testdev")
+    elements = [{"text": "闲鱼币", "bounds": [0, 0, 200, 80]}]
+    monkeypatch.setattr(hands_server, "runtime", _FakeRuntime(trace, _FakeSession(elements)))
+
+    await hands_server.click(target=1)
+    trace.begin("做一行")
+    await hands_server.click(target=1, role="task")
+
+    clicks = [record for record in _records(trace) if record.get("op") == "click"]
+    assert clicks[0]["role"] == "nav"
+    assert "title" not in clicks[0]
+    assert clicks[1]["role"] == "task"
+    assert clicks[1]["title"] == "做一行"
+    assert clicks[1]["in_row"] is True
+    assert "intent" not in clicks[1]
+
+    # Pixel center (100, 40) on 1080x2400 is normalized (93, 17).
+    await hands_server.click(target=[93, 17])
+    coord = [record for record in _records(trace) if record.get("op") == "click"][-1]
+    assert coord["source"] == "coord"
+    assert coord["role"] == "nav"
+    assert coord["near_text"] == "闲鱼币"
+
+
+def _sheet(title: str, button: str) -> list[dict]:
+    return [
+        {"text": "得骰子赚闲鱼币", "bounds": [200, 80, 800, 140]},
+        {"text": title, "bounds": [80, 400, 520, 460]},
+        {"text": button, "bounds": [800, 400, 1000, 460]},
+    ]
+
+
+def _bind(trace: HandsTrace, session: _FakeSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hands_server, "runtime", _FakeRuntime(trace, session))
+
+
+@pytest.mark.asyncio
+async def test_end_row_default_does_not_write_catalog_and_a_miss_still_closes(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = workdir / "tasks" / "闲鱼币任务清单.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({"rows": []}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(hands_server, "_repo_catalog", lambda: catalog)
+    monkeypatch.delenv("ARTEMIS_HANDS_END_ROW_WRITE", raising=False)
+
+    trace = HandsTrace(workdir, device="testdev")
+    session = _FakeSession(_sheet("去蚂蚁庄园逛一逛", "去完成"))
+
+    async def _look(include_image: bool = False, settle_ms: int = 0):
+        obs = ObserveResult(
+            ok=True,
+            hierarchy_ok=True,
+            elements=list(session.elements),
+            width=1080,
+            height=2400,
+            screenshot_path=str(workdir / "screen.jpg"),
+        )
+        return obs, None
+
+    session.look = _look  # type: ignore[method-assign]
+    _bind(trace, session, monkeypatch)
+
+    called: list[str] = []
+
+    def _boom(*_args, **_kwargs):
+        called.append("store")
+        raise AssertionError("store_steps should not run")
+
+    monkeypatch.setattr(hands_server, "store_steps", _boom)
+    trace.begin("去蚂蚁庄园逛一逛", extra={"how": "script"})
+    trace.note({"op": "click", "text": "去完成", "ok": True})
+    missed = json.loads(await hands_server.end_row())
+    assert missed["learned"] is False
+    assert missed["outcome"] == "fail"
+    assert missed["closed"] is True
+    assert missed["catalog_written"] is False
+    assert missed["reason"] == "按钮仍是去完成"
+    assert trace.title is None
+    assert called == []
+
+    trace.begin("去蚂蚁庄园逛一逛")
+    trace.note({"op": "click", "text": "去完成", "ok": True})
+    session.elements = _sheet("去蚂蚁庄园逛一逛", "领取奖励")
+    done = json.loads(await hands_server.end_row(reward="+10"))
+    assert done["learned"] is True
+    assert done["outcome"] == "done"
+    assert done["catalog_written"] is False
+    assert "steps" not in done
+    assert trace.title is None
+    assert json.loads(catalog.read_text(encoding="utf-8"))["rows"] == []
+    ends = [record for record in _records(trace) if record.get("op") == "end_row"]
+    assert ends[-1]["outcome"] == "done"
+    assert ends[-1]["catalog_written"] is False
+    assert ends[-1]["reward"] == "+10"
+    assert ends[-1]["button"] == "领取奖励"
+    assert "run_id" in ends[-1]
+
+
+@pytest.mark.asyncio
+async def test_end_row_writes_catalog_only_when_opted_in(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = workdir / "tasks" / "闲鱼币任务清单.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(
+        json.dumps(
+            {"rows": [{"title": "去蚂蚁庄园逛一逛", "run": "yes", "steps": [], "script_fails": 0}]},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hands_server, "_repo_catalog", lambda: catalog)
+    monkeypatch.setenv("ARTEMIS_HANDS_END_ROW_WRITE", "1")
+
+    trace = HandsTrace(workdir, device="testdev")
+    session = _FakeSession(_sheet("去蚂蚁庄园逛一逛", "领取奖励"))
+
+    async def _look(include_image: bool = False, settle_ms: int = 0):
+        return (
+            ObserveResult(
+                ok=True,
+                hierarchy_ok=True,
+                elements=list(session.elements),
+                width=1080,
+                height=2400,
+            ),
+            None,
+        )
+
+    session.look = _look  # type: ignore[method-assign]
+    _bind(trace, session, monkeypatch)
+    trace.begin("去蚂蚁庄园逛一逛")
+    trace.note({"op": "click", "text": "去完成", "ok": True})
+    payload = json.loads(await hands_server.end_row())
+    assert payload["learned"] is True
+    assert payload["catalog_written"] is True
+    assert payload["steps"][0]["text"] == "去完成"
+    saved = json.loads(catalog.read_text(encoding="utf-8"))
+    assert saved["rows"][0]["steps"][0]["text"] == "去完成"
+
+
+@pytest.mark.asyncio
+async def test_close_row_closes_without_a_look(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trace = HandsTrace(workdir, device="testdev")
+    _bind(trace, _FakeSession(), monkeypatch)
+    opened = json.loads(await hands_server.begin_row("甲", how="ai"))
+    assert opened["how"] == "ai"
+    closed = json.loads(await hands_server.close_row(outcome="lost", reason="掉线"))
+    assert closed["outcome"] == "lost"
+    assert closed["learned"] is False
+    assert closed["catalog_written"] is False
+    assert trace.title is None
+    assert "甲" in trace.pending_learn
+    end = [record for record in _records(trace) if record.get("op") == "end_row"][-1]
+    assert end["outcome"] == "lost"
+    assert end["reason"] == "掉线"
+    assert "button" not in end
+
+
+@pytest.mark.asyncio
+async def test_replay_environment_failure_keeps_steps_and_records_fail_kind(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = workdir / "tasks" / "闲鱼币任务清单.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "title": "去百度逛一逛",
+                        "run": "yes",
+                        "script_fails": 2,
+                        "steps": [{"op": "tap_text", "text": "去完成"}],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hands_server, "_repo_catalog", lambda: catalog)
+    trace = HandsTrace(workdir, device="testdev")
+    session = _FakeSession([])
+
+    async def _look(include_image: bool = False, settle_ms: int = 0):
+        return ObserveResult(ok=True, hierarchy_ok=False, elements=[]), None
+
+    session.look = _look  # type: ignore[method-assign]
+    _bind(trace, session, monkeypatch)
+
+    payload = json.loads(await hands_server.replay_row("去百度逛一逛"))
+    assert payload["ok"] is False
+    assert payload["outcome"] == "fail"
+    assert payload["fail_kind"] == "look"
+    assert payload["env_failure"] is True
+    assert payload["script_fails"] == 2
+    assert payload["cleared"] is False
+    saved = json.loads(catalog.read_text(encoding="utf-8"))
+    assert saved["rows"][0]["steps"]
+    assert saved["rows"][0]["script_fails"] == 2
+    records = _records(trace)
+    start = next(record for record in records if record.get("op") == "replay_start")
+    assert start["how"] == "replay"
+    assert start["steps"] == 1
+    assert start["title"] == "去百度逛一逛"
+    assert "summary" in start
+    end = next(record for record in records if record.get("op") == "replay_end")
+    assert end["fail_kind"] == "look"
+    assert end["outcome"] == "fail"
+    assert "run_id" in end
+    assert "in_row" not in end
