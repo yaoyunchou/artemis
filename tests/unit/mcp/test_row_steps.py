@@ -9,6 +9,7 @@ from pathlib import Path
 from artemis.mcp.hands_trace import HandsTrace, RowBusy
 from artemis.mcp.row_steps import (
     compress_steps,
+    infer_role,
     judge_row,
     merge_steps,
     note_replay_failure,
@@ -107,6 +108,36 @@ def test_merge_keeps_old_steps_and_unions_tap_words():
     assert merge_steps(old, []) == old
 
 
+def test_infer_role_marks_navigation_and_permission_words():
+    assert infer_role("闲鱼币") == "nav"
+    assert infer_role("始终允许") == "permission"
+    assert infer_role("去完成") == "task"
+
+
+def test_replay_environment_failure_does_not_increment_script_fails(tmp_path: Path):
+    catalog = tmp_path / "tasks" / "闲鱼币任务清单.json"
+    catalog.parent.mkdir()
+    catalog.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {"title": "去百度逛一逛", "run": "yes", "script_fails": 2, "steps": [{"op": "wait", "ms": 1}]},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    failed = note_replay_failure(catalog, "去百度逛一逛", reason="任务弹层没开")
+    assert failed["script_fails"] == 2
+    assert failed["cleared"] is False
+    assert failed["env_failure"] is True
+    saved = json.loads(catalog.read_text(encoding="utf-8"))
+    row = saved["rows"][0]
+    assert row["script_fails"] == 2
+    assert row["steps"]
+
+
 def test_store_steps_refuses_skip_and_replay_failure_clears_on_the_third_miss(tmp_path: Path):
     catalog = tmp_path / "tasks" / "闲鱼币任务清单.json"
     catalog.parent.mkdir()
@@ -161,10 +192,12 @@ def test_trace_refuses_a_second_begin_until_the_row_finishes(tmp_path: Path):
     except RowBusy:
         raised = True
     assert raised
-    trace.note({"op": "click", "text": "去完成"})
+    trace.note({"op": "click", "text": "去完成", "ok": True})
     events = trace.finish(learned=False)
     assert trace.title == "甲"
     assert events[0]["text"] == "去完成"
+    assert events[0]["title"] == "甲"
+    assert events[0]["in_row"] is True
     trace.finish(learned=True)
     assert trace.title is None
     lines = next((tmp_path / "logs" / "hands").rglob("*.jsonl")).read_text(encoding="utf-8")

@@ -109,7 +109,88 @@ def test_hands_server_registers_device_tools_only():
 
     names = _registered_tool_names()
     assert names == set(HANDS_TOOL_NAMES)
+    assert "close_row" in names
     assert "mobile_run_task" not in names
+
+
+def test_in_row_field_and_trace_done_add_title_when_row_open(tmp_path, monkeypatch):
+    from artemis.mcp import hands_server
+
+    trace = hands_server.HandsTrace(tmp_path, device="unit")
+    trace.begin("看视频领奖励", extra={"how": "ai"})
+    monkeypatch.setattr(hands_server, "runtime", hands_server.HandsRuntime())
+    hands_server.runtime.trace = trace
+    hands_server._trace_done({"op": "click", "text": "去完成"}, text="去完成")
+    line = next((tmp_path / "logs" / "hands").rglob("*.jsonl")).read_text(encoding="utf-8").splitlines()[-1]
+    import json
+
+    event = json.loads(line)
+    assert event["title"] == "看视频领奖励"
+    assert event["in_row"] is True
+    assert event["role"] == "task"
+
+
+@pytest.mark.asyncio
+async def test_end_row_default_does_not_write_catalog(tmp_path, monkeypatch):
+    import json
+
+    from artemis.mcp import hands_server
+    from artemis.mcp.row_steps import catalog_path
+
+    catalog = catalog_path(tmp_path)
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({"rows": []}, ensure_ascii=False), encoding="utf-8")
+
+    trace = hands_server.HandsTrace(tmp_path, device="unit")
+    trace.begin("去蚂蚁庄园逛一逛")
+    trace.note({"op": "click", "text": "去完成", "ok": True})
+
+    runtime = hands_server.HandsRuntime()
+    runtime.trace = trace
+    runtime.serial = "unit"
+    monkeypatch.setattr(hands_server, "runtime", runtime)
+    monkeypatch.delenv("ARTEMIS_HANDS_END_ROW_WRITE", raising=False)
+
+    async def fake_look(include_image: bool = True, settle_ms: int = 400):
+        from artemis.mcp.action_types import ObserveResult
+
+        elements = [
+            {"text": "得骰子赚闲鱼币", "bounds": [200, 80, 800, 140]},
+            {"text": "去蚂蚁庄园逛一逛", "bounds": [80, 400, 520, 460]},
+            {"text": "领取奖励", "bounds": [800, 400, 1000, 460]},
+        ]
+        obs = ObserveResult(
+            ok=True,
+            elements=elements,
+            elements_text="得骰子赚闲鱼币\n去蚂蚁庄园逛一逛\n领取奖励",
+            width=1080,
+            height=2400,
+            hierarchy_ok=True,
+        )
+        session.elements = elements
+        session._observed = True
+        session.width = 1080
+        session.height = 2400
+        return obs, None
+
+    session, _actuator = await _session_looking_at_settings()
+    session.look = fake_look  # type: ignore[method-assign]
+    runtime.session = session
+
+    wrote: list[str] = []
+
+    def _boom(*_args, **_kwargs):
+        wrote.append("called")
+        raise AssertionError("store_steps should not run")
+
+    monkeypatch.setattr(hands_server, "store_steps", _boom)
+    raw = await hands_server.end_row()
+    payload = json.loads(raw)
+    assert payload["learned"] is True
+    assert payload["outcome"] == "done"
+    assert payload["catalog_written"] is False
+    assert wrote == []
+    assert json.loads(catalog.read_text(encoding="utf-8"))["rows"] == []
 
 
 def test_cursor_config_adds_hands_without_replacing_agent():
