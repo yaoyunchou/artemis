@@ -1,5 +1,9 @@
 # 修改日志
 
+## 2026-10-10
+
+- hands 可学习日志（Artemis C1–C3）：开行期间 `HandsTrace.note/append` 自动补 `title` 与 `in_row`；`hands_server` 统一 `_in_row_field` / `_trace_done` / `_trace_missed`；`begin_row` 支持 `how`；新增 `close_row`；`end_row` 默认不再 `store_steps`（`ARTEMIS_HANDS_END_ROW_WRITE=1` 可恢复）；返回 `outcome`；`note_replay_failure` 区分环境失败（任务弹层没开、看屏失败）；`click`/`press_key` 可选 `role` 与黑名单推断；`replay_row` 写 `replay_*` 并带 `fail_kind`；补充单测与 `mcp_server/hands_rules.md` 说明。
+
 ## 2026-09-29
 
 - 主闲鱼「去逛一逛芭芭农场」停留三次仍是去完成，页面要下单，返回会掉进充值游戏。没有下单，清单标成跳过。

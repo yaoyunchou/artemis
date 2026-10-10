@@ -37,6 +37,7 @@ from artemis.mcp.row_steps import (
     compress_steps,
     find_catalog_row,
     find_tap,
+    infer_role,
     judge_row,
     load_catalog,
     note_replay_failure,
@@ -163,8 +164,56 @@ def _click_text(session: HandsSession, target: Any) -> str:
     return ""
 
 
+def _in_row_field() -> dict[str, Any]:
+    title = runtime.trace.title
+    if not title:
+        return {"in_row": False}
+    return {"in_row": True, "title": title}
+
+
+def _role_field(*, text: str = "", role: str = "", key: str = "") -> dict[str, Any]:
+    chosen = role.strip()
+    if not chosen and (text or key):
+        chosen = infer_role(text, key or None)
+    if chosen:
+        return {"role": chosen}
+    if runtime.trace.title:
+        return {"role": "task"}
+    return {}
+
+
+def _trace_done(event: dict[str, Any], *, text: str = "", role: str = "", key: str = "") -> None:
+    runtime.trace.note(
+        {
+            "ok": True,
+            **event,
+            **_in_row_field(),
+            **_role_field(text=text, role=role, key=key),
+        }
+    )
+
+
+def _trace_missed(
+    op: str,
+    *,
+    text: str = "",
+    role: str = "",
+    key: str = "",
+    **extra: Any,
+) -> None:
+    runtime.trace.append(
+        {
+            "op": f"{op}_failed",
+            "ok": False,
+            **_in_row_field(),
+            **_role_field(text=text, role=role, key=key),
+            **extra,
+        }
+    )
+
+
 def _note_look(session: HandsSession) -> None:
-    runtime.trace.note({"op": "look", "texts": _look_texts(session)})
+    _trace_done({"op": "look", "texts": _look_texts(session)})
 
 
 def _look_text(obs) -> str:
@@ -240,7 +289,12 @@ async def look(include_image: bool = True, settle_ms: int = 400) -> CallToolResu
 
 
 @mcp.tool(name="click")
-async def click(target: int | list[int], times: int = 1, delay_ms: int = 100) -> CallToolResult:
+async def click(
+    target: int | list[int],
+    times: int = 1,
+    delay_ms: int = 100,
+    role: str = "",
+) -> CallToolResult:
     """Tap an element index from the latest look, or a normalized [x, y] point."""
     try:
         session = runtime.ensure()
@@ -250,11 +304,16 @@ async def click(target: int | list[int], times: int = 1, delay_ms: int = 100) ->
     try:
         result = await session.click(target, times=times, delay_ms=delay_ms)
     except Exception as exc:
+        _trace_missed("click", text=text, role=role)
         return _failure("click", f"Error during click: {exc}")
     if result.ok:
-        runtime.trace.note(
-            {"op": "click", "text": text, "xy": result.normalized_coordinates}
+        _trace_done(
+            {"op": "click", "text": text, "xy": result.normalized_coordinates},
+            text=text,
+            role=role,
         )
+    else:
+        _trace_missed("click", text=text, role=role, reason=result.message)
     return _ok_result(result)
 
 
@@ -283,7 +342,9 @@ async def swipe(start: list[int], end: list[int], duration_ms: int = 800) -> Cal
     except Exception as exc:
         return _failure("swipe", f"Error during swipe: {exc}")
     if result.ok:
-        runtime.trace.note({"op": "swipe", "start": start, "end": end})
+        _trace_done({"op": "swipe", "start": start, "end": end})
+    else:
+        _trace_missed("swipe", start=start, end=end)
     return _ok_result(result)
 
 
@@ -305,7 +366,7 @@ async def input_text(
 
 
 @mcp.tool(name="press_key")
-async def press_key(key: str) -> CallToolResult:
+async def press_key(key: str, role: str = "") -> CallToolResult:
     """Press a key such as back, home, enter, or an Android KEYCODE_* name."""
     try:
         session = runtime.ensure()
@@ -314,9 +375,12 @@ async def press_key(key: str) -> CallToolResult:
     try:
         result = await session.press_key(key)
     except Exception as exc:
+        _trace_missed("press_key", key=key, role=role)
         return _failure("press_key", f"Error during press_key: {exc}")
     if result.ok:
-        runtime.trace.note({"op": "press_key", "key": key})
+        _trace_done({"op": "press_key", "key": key}, role=role, key=key)
+    else:
+        _trace_missed("press_key", key=key, role=role, reason=result.message)
     return _ok_result(result)
 
 
@@ -384,7 +448,9 @@ async def wait_for_delay(time_in_ms: int) -> CallToolResult:
     except Exception as exc:
         return _failure("wait_for_delay", f"Error during wait_for_delay: {exc}")
     if result.ok:
-        runtime.trace.note({"op": "wait", "ms": time_in_ms})
+        _trace_done({"op": "wait", "ms": time_in_ms})
+    else:
+        _trace_missed("wait", ms=time_in_ms)
     return _ok_result(result)
 
 
@@ -426,62 +492,130 @@ def _repo_catalog() -> Path:
 
 
 @mcp.tool(name="begin_row")
-async def begin_row(title: str) -> str:
-    """Start learning one task row. Refuses while the previous row is still open."""
+async def begin_row(title: str, how: str = "") -> str:
+    """Open a task-row span in the hands log. Refuses while another row is still open."""
     name = title.strip()
     if not name:
         return _json({"ok": False, "reason": "行名是空的"})
+    extra: dict[str, Any] | None = None
+    how_name = how.strip()
+    if how_name:
+        extra = {"how": how_name}
     try:
-        runtime.trace.begin(name)
+        runtime.trace.begin(name, extra=extra)
     except RowBusy as exc:
         return _json({"ok": False, "reason": str(exc), "open_title": exc.title})
-    return _json({"ok": True, "title": name})
+    payload: dict[str, Any] = {"ok": True, "title": name}
+    if how_name:
+        payload["how"] = how_name
+    return _json(payload)
+
+
+@mcp.tool(name="close_row")
+async def close_row(outcome: str, reason: str = "", abandon: bool = False) -> str:
+    """Close the open row span without looking at the screen or writing the catalog."""
+    if not runtime.trace.title:
+        return _json({"ok": False, "reason": "没有进行中的行"})
+    title = runtime.trace.title
+    outcome_name = outcome.strip() or ("skip" if abandon else "fail")
+    if abandon:
+        runtime.trace.abandon(outcome=outcome_name, reason=reason.strip())
+    else:
+        learned = outcome_name == "done"
+        runtime.trace.close_span(
+            learned=learned,
+            outcome=outcome_name,
+            reason=reason.strip(),
+        )
+    return _json(
+        {
+            "ok": True,
+            "title": title,
+            "outcome": outcome_name,
+            "learned": outcome_name == "done",
+            "reason": reason.strip(),
+            "abandon": abandon,
+        }
+    )
 
 
 @mcp.tool(name="end_row")
 async def end_row(abandon: bool = False) -> str:
-    """Look once and, if the sheet shows this row is done, store its steps.
+    """Look once and log whether this row looks done. Does not write steps to the catalog by default.
 
-    ``abandon`` closes the row without storing steps. Use it only after the
-    catalog row has been marked skip. A row that is not done stays open.
+    ``learned`` only means the sheet looked finished, not that steps were stored.
+    Set ``ARTEMIS_HANDS_END_ROW_WRITE=1`` to restore writing steps into the catalog.
+    ``abandon`` closes the row as skipped. A row that is not done stays open.
+    Prefer ``close_row`` when the caller already knows the outcome.
     """
     if not runtime.trace.title:
-        return _json({"ok": False, "learned": False, "reason": "没有进行中的行"})
+        return _json({"ok": False, "learned": False, "reason": "没有进行中的行", "outcome": "fail"})
     title = runtime.trace.title
     if abandon:
-        runtime.trace.abandon()
-        return _json({"ok": True, "learned": False, "title": title, "abandon": True})
+        runtime.trace.abandon(outcome="skip")
+        return _json(
+            {
+                "ok": True,
+                "learned": False,
+                "title": title,
+                "outcome": "skip",
+                "abandon": True,
+            }
+        )
     try:
         session = runtime.ensure()
     except HandsBindError as exc:
-        return _json({"ok": False, "learned": False, "reason": str(exc)})
+        return _json({"ok": False, "learned": False, "reason": str(exc), "outcome": "fail"})
     try:
         obs, _image = await session.look(include_image=False, settle_ms=300)
     except Exception as exc:
-        return _json({"ok": False, "learned": False, "reason": f"看屏失败：{exc}"})
+        return _json({"ok": False, "learned": False, "reason": f"看屏失败：{exc}", "outcome": "fail"})
     if not (obs.ok and obs.hierarchy_ok):
-        return _json({"ok": False, "learned": False, "reason": "看屏失败"})
+        return _json({"ok": False, "learned": False, "reason": "看屏失败", "outcome": "fail"})
     _note_look(session)
     judged = judge_row(session.elements, title)
     if not judged["learned"]:
-        return _json({"ok": True, "learned": False, "title": title, "reason": judged["reason"]})
+        return _json(
+            {
+                "ok": True,
+                "learned": False,
+                "title": title,
+                "reason": judged["reason"],
+                "outcome": "fail",
+                "button": judged.get("button"),
+            }
+        )
     steps = compress_steps(runtime.trace.events, title)
     if not steps:
-        return _json({"ok": True, "learned": False, "title": title, "reason": "没有可按文字重放的点击"})
-    try:
-        row = store_steps(_repo_catalog(), title, steps)
-    except ValueError as exc:
-        return _json({"ok": False, "learned": False, "title": title, "reason": str(exc)})
-    runtime.trace.finish(learned=True)
-    return _json(
-        {
-            "ok": True,
-            "learned": True,
-            "title": title,
-            "button": judged["button"],
-            "steps": row.get("steps") or [],
-        }
-    )
+        return _json(
+            {
+                "ok": True,
+                "learned": False,
+                "title": title,
+                "reason": "没有可按文字重放的点击",
+                "outcome": "fail",
+            }
+        )
+    write_catalog = os.environ.get("ARTEMIS_HANDS_END_ROW_WRITE") == "1"
+    stored_steps: list[dict[str, Any]] | None = None
+    if write_catalog:
+        try:
+            row = store_steps(_repo_catalog(), title, steps)
+        except ValueError as exc:
+            return _json({"ok": False, "learned": False, "title": title, "reason": str(exc), "outcome": "fail"})
+        stored_steps = list(row.get("steps") or [])
+    runtime.trace.finish(learned=True, outcome="done", reason=str(judged.get("reason") or ""))
+    payload: dict[str, Any] = {
+        "ok": True,
+        "learned": True,
+        "title": title,
+        "outcome": "done",
+        "button": judged["button"],
+        "catalog_written": write_catalog,
+    }
+    if stored_steps is not None:
+        payload["steps"] = stored_steps
+    return _json(payload)
 
 
 @mcp.tool(name="replay_row")
@@ -508,21 +642,59 @@ async def replay_row(title: str) -> str:
         session = runtime.ensure()
     except HandsBindError as exc:
         return _json({"ok": False, "reason": str(exc)})
+
+    def _replay_note(event: dict[str, Any]) -> None:
+        runtime.trace.note(
+            {
+                "ok": True,
+                **event,
+                "title": name,
+                "in_row": True,
+                "role": "replay",
+            }
+        )
+
+    def _replay_fail(
+        reason: str,
+        *,
+        step: int | None = None,
+        fail_kind: str = "script",
+        **extra: Any,
+    ) -> str:
+        failure = note_replay_failure(catalog, name, reason=reason)
+        runtime.trace.append(
+            {
+                "op": "replay_end",
+                "title": name,
+                "ok": False,
+                "outcome": "fail",
+                "reason": reason,
+                "fail_kind": fail_kind if not failure.get("env_failure") else "env",
+            }
+        )
+        payload: dict[str, Any] = {
+            "ok": False,
+            "title": name,
+            "reason": reason,
+            "outcome": "fail",
+            **failure,
+            **extra,
+        }
+        if step is not None:
+            payload["step"] = step
+        return _json(payload)
+
+    runtime.trace.append({"op": "replay_start", "title": name, "how": "replay"})
     deadline = time.monotonic() + 60
     for index, step in enumerate(steps, start=1):
         if time.monotonic() > deadline:
-            failure = note_replay_failure(catalog, name)
-            return _json(
-                {"ok": False, "title": name, "step": index, "reason": "超过一分钟", **failure}
-            )
+            return _replay_fail("超过一分钟", step=index, fail_kind="timeout")
         try:
             obs, _image = await session.look(include_image=False, settle_ms=200)
         except Exception as exc:
-            failure = note_replay_failure(catalog, name)
-            return _json({"ok": False, "title": name, "step": index, "reason": str(exc), **failure})
+            return _replay_fail(str(exc), step=index, fail_kind="look")
         if not (obs.ok and obs.hierarchy_ok):
-            failure = note_replay_failure(catalog, name)
-            return _json({"ok": False, "title": name, "step": index, "reason": "看屏失败", **failure})
+            return _replay_fail("看屏失败", step=index, fail_kind="look")
         _note_look(session)
         op = step.get("op")
         if op == "tap_text":
@@ -530,54 +702,56 @@ async def replay_row(title: str) -> str:
             if point is None:
                 if step.get("optional"):
                     continue
-                failure = note_replay_failure(catalog, name)
-                return _json(
-                    {
-                        "ok": False,
-                        "title": name,
-                        "step": index,
-                        "reason": "屏幕上没有这一步的字",
-                        "texts": _look_texts(session),
-                        **failure,
-                    }
+                return _replay_fail(
+                    "屏幕上没有这一步的字",
+                    step=index,
+                    fail_kind="script",
+                    texts=_look_texts(session),
                 )
             result = await session.click(point)
             if result.ok:
-                runtime.trace.note(
-                    {"op": "click", "text": step.get("text") or "", "xy": result.normalized_coordinates}
+                _replay_note(
+                    {
+                        "op": "click",
+                        "text": step.get("text") or "",
+                        "xy": result.normalized_coordinates,
+                    }
                 )
             elif not step.get("optional"):
-                failure = note_replay_failure(catalog, name)
-                return _json(
-                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure}
-                )
+                return _replay_fail(result.message, step=index, fail_kind="script")
         elif op == "wait":
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             millis = min(int(step.get("ms") or 0), max(0, remaining_ms))
             if millis:
                 await session.wait_for_delay(millis)
-                runtime.trace.note({"op": "wait", "ms": millis})
+                _replay_note({"op": "wait", "ms": millis})
         elif op == "key":
             result = await session.press_key(str(step.get("key") or "back"))
             if result.ok:
-                runtime.trace.note({"op": "press_key", "key": step.get("key") or "back"})
+                _replay_note({"op": "press_key", "key": step.get("key") or "back"})
             else:
-                failure = note_replay_failure(catalog, name)
-                return _json(
-                    {"ok": False, "title": name, "step": index, "reason": result.message, **failure}
-                )
+                return _replay_fail(result.message, step=index, fail_kind="script")
     try:
         obs, _image = await session.look(include_image=False, settle_ms=300)
     except Exception as exc:
-        failure = note_replay_failure(catalog, name)
-        return _json({"ok": False, "title": name, "reason": str(exc), **failure})
+        return _replay_fail(str(exc), fail_kind="look")
     if not (obs.ok and obs.hierarchy_ok):
-        failure = note_replay_failure(catalog, name)
-        return _json({"ok": False, "title": name, "reason": "看屏失败", **failure})
+        return _replay_fail("看屏失败", fail_kind="look")
     _note_look(session)
     judged = judge_row(session.elements, name)
     if not judged["learned"]:
-        failure = note_replay_failure(catalog, name)
+        fail_kind = "env" if judged["reason"] == "任务弹层没开" else "script"
+        failure = note_replay_failure(catalog, name, reason=str(judged["reason"]))
+        runtime.trace.append(
+            {
+                "op": "replay_end",
+                "title": name,
+                "ok": False,
+                "outcome": "fail",
+                "reason": judged["reason"],
+                "fail_kind": fail_kind,
+            }
+        )
         return _json(
             {
                 "ok": False,
@@ -585,11 +759,30 @@ async def replay_row(title: str) -> str:
                 "reason": judged["reason"],
                 "button": judged["button"],
                 "texts": _look_texts(session),
+                "outcome": "fail",
                 **failure,
             }
         )
     note_replay_success(catalog, name)
-    return _json({"ok": True, "title": name, "button": judged["button"], "reason": judged["reason"]})
+    runtime.trace.append(
+        {
+            "op": "replay_end",
+            "title": name,
+            "ok": True,
+            "outcome": "done",
+            "button": judged["button"],
+            "reason": judged["reason"],
+        }
+    )
+    return _json(
+        {
+            "ok": True,
+            "title": name,
+            "button": judged["button"],
+            "reason": judged["reason"],
+            "outcome": "done",
+        }
+    )
 
 
 def _registered_tool_names() -> set[str]:
