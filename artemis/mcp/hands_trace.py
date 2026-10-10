@@ -16,6 +16,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# These records already carry their own identity. Auto-stamping the open row's
+# title onto them would either hide a run boundary (``run_start`` must stay
+# untitled so recovery ignores it) or rewrite a replay that names a different row.
+_SKIP_AUTO_TITLE_OPS = frozenset(
+    {
+        "begin_row",
+        "end_row",
+        "run_start",
+        "replay_start",
+        "replay_end",
+        "replay_step",
+    }
+)
+
 
 class RowBusy(RuntimeError):
     """begin_row was called while another row is still open."""
@@ -198,6 +212,7 @@ class HandsTrace:
                     "op": "end_row",
                     "title": title,
                     "learned": False,
+                    "outcome": "lost",
                     "reason": "进程重启，上一行未收尾",
                     "recovered": True,
                 }
@@ -215,6 +230,23 @@ class HandsTrace:
 
     # ---------------------------------------------------------------- append
 
+    def _enrich_open_row(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Stamp the open row onto an action so every step shares one title.
+
+        ``run_start`` / ``begin_row`` / ``end_row`` / ``replay_*`` are left
+        alone: they already name a span, and a ``run_start`` must not grow a
+        title or recovery will try to pair it.
+        """
+        if not self.title:
+            return event
+        op = str(event.get("op") or "")
+        if op in _SKIP_AUTO_TITLE_OPS:
+            return event
+        enriched = dict(event)
+        enriched.setdefault("title", self.title)
+        enriched["in_row"] = True
+        return enriched
+
     def append(self, event: dict[str, Any], *, when: datetime | None = None) -> None:
         moment = when or datetime.now()
         path = self.path_for(moment)
@@ -225,7 +257,7 @@ class HandsTrace:
             "ts": moment.isoformat(timespec="seconds"),
             "run_id": self.run_id,
             "run_seq": self.run_seq,
-            **event,
+            **self._enrich_open_row(event),
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -251,9 +283,10 @@ class HandsTrace:
 
     def note(self, event: dict[str, Any]) -> None:
         """Write the action, and keep it on the open row when one is being learned."""
-        self.append(event)
+        enriched = self._enrich_open_row(event)
+        self.append(enriched)
         if self.title is not None:
-            self.events.append(event)
+            self.events.append(enriched)
 
     # ---------------------------------------------------------------- row
 
@@ -275,60 +308,88 @@ class HandsTrace:
             self.before = snapshot
             self.save()
 
+    def close_span(
+        self,
+        *,
+        learned: bool,
+        outcome: str,
+        reason: str = "",
+        abandon: bool = False,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Write ``end_row`` and drop the open span. Always closes.
+
+        A miss is a debt in ``pending_learn``, not a lock. ``abandon`` is the
+        deliberate skip: it does not enter ``pending_learn`` or ``completed``.
+        ``outcome`` is ``done`` / ``fail`` / ``skip`` / ``lost`` and is only a
+        log field -- ``learned`` still decides the debt lists.
+        """
+        if not self.title:
+            raise RuntimeError("没有进行中的行")
+        title = self.title
+        payload: dict[str, Any] = {
+            "op": "end_row",
+            "title": title,
+            "learned": learned,
+            "outcome": outcome,
+            "reason": reason,
+        }
+        if abandon:
+            payload["abandon"] = True
+        if extra:
+            payload.update(extra)
+        self.append(payload)
+        if not abandon:
+            if learned:
+                if title not in self.completed:
+                    self.completed.append(title)
+            elif title not in self.pending_learn:
+                self.pending_learn.append(title)
+        self.title = None
+        self.before = None
+        self.events = []
+        self.save()
+
     def finish(
         self,
         *,
         learned: bool,
         reason: str = "",
         extra: dict[str, Any] | None = None,
+        outcome: str = "",
     ) -> list[dict[str, Any]]:
         """Close the open row. Always closes, so one miss cannot stall the run.
 
         An unlearned row becomes a debt in ``pending_learn`` for the offline
-        pass, instead of blocking every later row.
+        pass, instead of blocking every later row. A miss is never left open.
 
         ``extra`` adds diagnostic fields (button, package, element count, stored
-        steps) to the ``end_row`` log line. It is a log detail only: the outcome
-        is decided by ``learned`` and ``reason`` exactly as before.
+        steps) to the ``end_row`` log line. ``outcome`` defaults to ``done`` when
+        ``learned`` is true and ``fail`` otherwise.
         """
         if not self.title:
             raise RuntimeError("没有进行中的行")
         events = list(self.events)
-        title = self.title
-        payload: dict[str, Any] = {
-            "op": "end_row",
-            "title": title,
-            "learned": learned,
-            "reason": reason,
-        }
-        if extra:
-            payload.update(extra)
-        self.append(payload)
-        if learned:
-            if title not in self.completed:
-                self.completed.append(title)
-        elif title not in self.pending_learn:
-            self.pending_learn.append(title)
-        self.title = None
-        self.before = None
-        self.events = []
-        self.save()
+        self.close_span(
+            learned=learned,
+            outcome=outcome or ("done" if learned else "fail"),
+            reason=reason,
+            extra=extra,
+        )
         return events
 
-    def abandon(self, *, extra: dict[str, Any] | None = None) -> None:
+    def abandon(
+        self,
+        *,
+        extra: dict[str, Any] | None = None,
+        outcome: str = "skip",
+        reason: str = "",
+    ) -> None:
         """Close the row as deliberately not worth learning (catalog marks it skip)."""
-        if not self.title:
-            raise RuntimeError("没有进行中的行")
-        payload: dict[str, Any] = {
-            "op": "end_row",
-            "title": self.title,
-            "learned": False,
-            "abandon": True,
-        }
-        if extra:
-            payload.update(extra)
-        self.append(payload)
-        self.title = None
-        self.before = None
-        self.events = []
-        self.save()
+        self.close_span(
+            learned=False,
+            outcome=outcome or "skip",
+            reason=reason,
+            abandon=True,
+            extra=extra,
+        )

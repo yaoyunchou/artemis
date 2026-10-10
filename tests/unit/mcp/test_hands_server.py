@@ -109,6 +109,8 @@ def test_hands_server_registers_device_tools_only():
 
     names = _registered_tool_names()
     assert names == set(HANDS_TOOL_NAMES)
+    assert "close_row" in names
+    assert "begin_run" in names
     assert "mobile_run_task" not in names
 
 

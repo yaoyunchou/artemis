@@ -23,6 +23,36 @@ SHEET_TOKENS = (
 BUTTONS = ("领取奖励", "去完成", "已完成")
 OPTIONAL_TEXTS = {"取消", "关闭", "关闭广告", "残忍离开", "跳过"}
 CATALOG_NAME = "闲鱼币任务清单.json"
+NAV_TEXTS = frozenset(
+    {"闲鱼币", "我的", "领", "赚更多", "首页", "返回", "任务奖励", "赚骰子", "得骰子赚闲鱼币"}
+)
+PERMISSION_TEXTS = frozenset({"微信", "始终允许", "允许", "仅在使用中允许"})
+COLD_START_KEYS = frozenset({"home", "keycode_home", "keycode_app_switch", "recent"})
+# These misses are the environment, not a bad script. They must not burn
+# ``script_fails`` or wipe steps that were already learned.
+ENV_REPLAY_REASON_MARKERS = ("任务弹层没开", "看屏失败")
+
+
+def infer_role(text: str = "", key: str | None = None) -> str:
+    """Guess a learning bucket from visible text or a key press.
+
+    ``task`` is the residual bucket. Callers should write it only while a row
+    is open; navigation, permission, and cold-start hits are meaningful either way.
+    """
+    word = text.strip()
+    if word in NAV_TEXTS:
+        return "nav"
+    if word in PERMISSION_TEXTS:
+        return "permission"
+    if key:
+        normalized = key.strip().lower()
+        if normalized in COLD_START_KEYS:
+            return "cold_start"
+    return "task"
+
+
+def _replay_failure_is_environmental(reason: str) -> bool:
+    return any(marker in reason for marker in ENV_REPLAY_REASON_MARKERS)
 
 
 def element_text(element: dict[str, Any]) -> str:
@@ -302,13 +332,25 @@ def store_steps(path: Path, title: str, steps: list[dict[str, Any]]) -> dict[str
     return row
 
 
-def note_replay_failure(path: Path, title: str) -> dict[str, Any]:
-    """Count one replay miss. The third miss drops steps so the model can relearn."""
+def note_replay_failure(path: Path, title: str, *, reason: str = "") -> dict[str, Any]:
+    """Count one replay miss. The third script miss drops steps so the row can be relearned.
+
+    ``reason`` containing 「任务弹层没开」 or 「看屏失败」 is an environment miss:
+    the counter stays put and steps are kept.
+    """
     data = load_catalog(path)
     row = find_catalog_row(data, title)
     if row is None:
         raise ValueError(f"清单里没有 {title}")
-    fails = int(row.get("script_fails") or 0) + 1
+    current = int(row.get("script_fails") or 0)
+    if _replay_failure_is_environmental(reason):
+        return {
+            "title": title,
+            "script_fails": current,
+            "cleared": False,
+            "env_failure": True,
+        }
+    fails = current + 1
     row["script_fails"] = fails
     cleared = False
     if fails >= 3:

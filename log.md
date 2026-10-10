@@ -1,5 +1,13 @@
 # 修改日志
 
+## 2026-10-10
+
+- **合入可学习日志（PR #1 → `feature/20260926`）**。PR 从更旧的分叉点改 `hands_trace` / `hands_server` / `row_steps`，直接 merge 会把基线已有的 `run_id`/`run_seq`、`pkg`、`intent`、`begin_run`、设备 bind/restore、look/click 诊断和「失败也关行」退回旧版。这次按能力吸收，不回退字段。
+  - **留下基线**：`HandsTrace.finish` 失败仍关行并记入 `pending_learn`；`end_row` 未学会也 `closed: true`；`replay_start` 仍带步骤数、`summary`、`script_fails`、`pkg`；click 仍带 `source` / `near_*` / `intent`。
+  - **从 PR 吸收**：开行期间 `note`/`append` 自动补 `title` + `in_row`（`run_start` / `begin_row` / `end_row` / `replay_*` 不继承，避免 `run_start` 被恢复逻辑当成一行）；`_in_row_field` 带回 `title`；`_trace_done` / `_trace_missed` 统一打点；`begin_row(how=)`；新增 `close_row(outcome, reason, abandon)`，只关 span、不看屏、不写清单；`end_row` 默认不再 `store_steps`（`ARTEMIS_HANDS_END_ROW_WRITE=1` 才写），返回 `outcome`，`learned` 只表示弹层看起来做成了；`note_replay_failure(reason=)` 在原因含「任务弹层没开」「看屏失败」时不加 `script_fails`、不清 `steps`；`click` / `press_key` 可选 `role`，黑名单推断 `nav` / `permission` / `cold_start`（坐标点击用 `near_text`），开行时其余默认 `task`，显式 `role` 优先；`replay_end` 增加 `outcome` 与 `fail_kind`。
+  - **冲突取舍**：PR 的 `finish` 是「miss 不关行」，基线已改成关行，保持基线。PR 的 `replay_start` 只有 `title`/`how`，基线字段全部保留并补上 `how`。恢复未关行仍写 `end_row`，补 `outcome: lost`。
+  - 单测补在 `tests/unit/mcp/test_hands_trace_fields.py`、`test_row_steps.py`、`test_hands_server.py`。说明写进 `mcp_server/hands_rules.md`。未改闲鱼币清单内容。
+
 ## 2026-10-08
 
 - **增强 MCP 运行日志**（用户要求：不改变逻辑，尽可能详细地输出运行日志）。

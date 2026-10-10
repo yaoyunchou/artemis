@@ -10,6 +10,7 @@ from pathlib import Path
 from artemis.mcp.hands_trace import HandsTrace, RowBusy
 from artemis.mcp.row_steps import (
     compress_steps,
+    infer_role,
     judge_row,
     merge_steps,
     note_replay_failure,
@@ -108,6 +109,46 @@ def test_merge_keeps_old_steps_and_unions_tap_words():
     assert merge_steps(old, []) == old
 
 
+def test_infer_role_marks_navigation_permission_and_cold_start():
+    assert infer_role("闲鱼币") == "nav"
+    assert infer_role("始终允许") == "permission"
+    assert infer_role("去完成") == "task"
+    assert infer_role("", key="HOME") == "cold_start"
+    assert infer_role("返回", key="home") == "nav"
+
+
+def test_replay_environment_failure_does_not_increment_script_fails(tmp_path: Path):
+    catalog = tmp_path / "tasks" / "闲鱼币任务清单.json"
+    catalog.parent.mkdir()
+    catalog.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "title": "去百度逛一逛",
+                        "run": "yes",
+                        "script_fails": 2,
+                        "steps": [{"op": "wait", "ms": 1}],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    failed = note_replay_failure(catalog, "去百度逛一逛", reason="看屏失败：adb")
+    assert failed["script_fails"] == 2
+    assert failed["cleared"] is False
+    assert failed["env_failure"] is True
+    saved = json.loads(catalog.read_text(encoding="utf-8"))
+    row = saved["rows"][0]
+    assert row["script_fails"] == 2
+    assert row["steps"]
+    counted = note_replay_failure(catalog, "去百度逛一逛", reason="屏幕上没有这一步的字")
+    assert counted["script_fails"] == 3
+    assert counted["cleared"] is True
+
+
 def test_store_steps_refuses_skip_and_replay_failure_clears_on_the_third_miss(tmp_path: Path):
     catalog = tmp_path / "tasks" / "闲鱼币任务清单.json"
     catalog.parent.mkdir()
@@ -186,6 +227,8 @@ def test_finish_always_closes_the_row_so_one_miss_cannot_stall_the_run(tmp_path:
     events = trace.finish(learned=False, reason="按钮仍是去完成")
     assert trace.title is None
     assert events[0]["text"] == "去完成"
+    assert events[0]["title"] == "甲"
+    assert events[0]["in_row"] is True
     assert "甲" in trace.pending_learn
     trace.begin("乙")
     assert trace.title == "乙"
@@ -209,6 +252,7 @@ def test_a_reloaded_process_recovers_the_open_row_instead_of_blocking(tmp_path: 
     assert second.title == "乙"
     log = next((tmp_path / "logs" / "hands").rglob("*.jsonl")).read_text(encoding="utf-8")
     assert "进程重启" in log
+    assert '"outcome": "lost"' in log
 
 
 def test_match_rows_replays_when_steps_exist_and_record_ok_keeps_them(tmp_path: Path):
